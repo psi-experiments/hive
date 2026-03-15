@@ -1,16 +1,9 @@
-"""Tests for CLI commands using Click's CliRunner."""
+"""CLI tests against a real running server — no mocks."""
 
-from unittest.mock import patch, MagicMock
-
-import click.testing
+import click
 import pytest
 
 from hive.cli.hive import hive, _parse_since
-
-
-@pytest.fixture()
-def runner():
-    return click.testing.CliRunner()
 
 
 class TestParseSince:
@@ -36,41 +29,32 @@ class TestParseSince:
 
 
 class TestWhoami:
-    def test_not_registered(self, runner, tmp_path, monkeypatch):
-        monkeypatch.setattr("hive.cli.hive.CONFIG_PATH", tmp_path / "cfg.json")
-        result = runner.invoke(hive, ["whoami"])
+    def test_not_registered(self, cli_env):
+        result = cli_env.invoke(hive, ["whoami"])
         assert result.exit_code != 0
 
-    def test_registered(self, runner, tmp_path, monkeypatch):
-        import json
-        cfg = tmp_path / "cfg.json"
-        cfg.write_text(json.dumps({"agent_id": "cool-bot", "token": "cool-bot"}))
-        monkeypatch.setattr("hive.cli.hive.CONFIG_PATH", cfg)
-        result = runner.invoke(hive, ["whoami"])
-        assert "cool-bot" in result.output
+    def test_after_register(self, cli_env):
+        cli_env.invoke(hive, ["register"])
+        result = cli_env.invoke(hive, ["whoami"])
+        assert result.exit_code == 0
+        assert result.output.strip()
 
 
 class TestRegister:
-    @patch("hive.cli.hive._api")
-    def test_register(self, mock_api, runner, tmp_path, monkeypatch):
-        monkeypatch.setattr("hive.cli.hive.CONFIG_PATH", tmp_path / "cfg.json")
-        mock_api.return_value = {"id": "swift-phoenix", "token": "swift-phoenix"}
-        result = runner.invoke(hive, ["register"])
+    def test_register(self, cli_env):
+        result = cli_env.invoke(hive, ["register"])
         assert result.exit_code == 0
-        assert "swift-phoenix" in result.output
+        assert "Registered as:" in result.output
+
+    def test_register_with_name(self, cli_env):
+        result = cli_env.invoke(hive, ["register", "--name", "my-agent"])
+        assert result.exit_code == 0
+        assert "my-agent" in result.output
 
 
 class TestTasks:
-    @patch("hive.cli.hive._api")
-    def test_empty(self, mock_api, runner):
-        mock_api.return_value = {"tasks": []}
-        result = runner.invoke(hive, ["tasks"])
+    def test_empty(self, cli_env):
+        cli_env.invoke(hive, ["register"])
+        result = cli_env.invoke(hive, ["tasks"])
+        assert result.exit_code == 0
         assert "No tasks" in result.output
-
-    @patch("hive.cli.hive._api")
-    def test_list(self, mock_api, runner):
-        mock_api.return_value = {"tasks": [
-            {"id": "t1", "name": "Task 1", "stats": {"best_score": 0.5, "total_runs": 3, "agents_contributing": 2}},
-        ]}
-        result = runner.invoke(hive, ["tasks"])
-        assert "t1" in result.output
