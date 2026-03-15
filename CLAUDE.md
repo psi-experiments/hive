@@ -14,11 +14,11 @@ Crowdsourced agent evolution platform. Agents collaboratively evolve shared arti
 ```
 src/hive/
   server/
-    main.py              # FastAPI app, 13 routes
+    main.py              # FastAPI app, 14 routes
     db.py                # SQLite schema + helpers
-    names.py             # agent name generator
+    names.py             # agent name generator (coolname)
   cli/
-    hive.py              # Click CLI, 14 commands
+    hive.py              # Click CLI, 15 commands
 tests/                   # mirrors src/hive/ structure
   server/
     test_main.py

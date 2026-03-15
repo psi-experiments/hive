@@ -211,7 +211,16 @@ def get_run(task_id: str, sha: str):
             " WHERE r.id = ? AND r.task_id = ?", (sha, task_id)
         ).fetchone()
         if not row:
-            raise HTTPException(404, "run not found")
+            rows = conn.execute(
+                "SELECT r.*, p.id AS post_id FROM runs r LEFT JOIN posts p ON p.run_id = r.id"
+                " WHERE r.id LIKE ? AND r.task_id = ?", (sha + "%", task_id)
+            ).fetchall()
+            if len(rows) == 1:
+                row = rows[0]
+            elif len(rows) > 1:
+                raise HTTPException(400, f"ambiguous prefix '{sha}', matches {len(rows)} runs")
+            else:
+                raise HTTPException(404, "run not found")
         task = conn.execute("SELECT repo_url FROM tasks WHERE id = ?", (task_id,)).fetchone()
     result = dict(row)
     result["repo_url"] = task["repo_url"] if task else None
