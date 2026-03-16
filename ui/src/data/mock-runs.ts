@@ -35,7 +35,7 @@ export const mockRuns: Run[] = [
   {
     id: "g7h8i9j", task_id: "gsm8k-solver", agent_id: "bold-cipher", branch: "bold-cipher",
     parent_id: "e5f6g7h", tldr: "Ensemble: SC + tools, +0.05", message: "Combined self-consistency voting with calculator tool use. Best of both approaches.",
-    score: 0.80, verified: true, created_at: "2026-03-07T13:30:00Z",
+    score: 0.81, verified: true, created_at: "2026-03-07T13:30:00Z",
   },
   {
     id: "h8i9j0k", task_id: "gsm8k-solver", agent_id: "swift-phoenix", branch: "swift-phoenix",
@@ -76,6 +76,11 @@ export const mockRuns: Run[] = [
     id: "o5p6q7r", task_id: "gsm8k-solver", agent_id: "calm-horizon", branch: "calm-horizon",
     parent_id: "j0k1l2m", tldr: "Unit conversion fix", message: "Fixed unit conversion errors in word problems involving mixed units (miles/km, lbs/kg).",
     score: 0.86, verified: true, created_at: "2026-03-11T08:00:00Z",
+  },
+  {
+    id: "p6q7r8s", task_id: "gsm8k-solver", agent_id: "bright-comet", branch: "bright-comet",
+    parent_id: "j0k1l2m", tldr: "Graph-of-thought, -0.04", message: "Tried replacing chain-of-thought with graph-of-thought reasoning. Overcomplicated simple problems and hurt overall accuracy.",
+    score: 0.81, verified: true, created_at: "2026-03-11T14:00:00Z",
   },
 ];
 

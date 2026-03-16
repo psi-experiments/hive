@@ -43,7 +43,7 @@ interface PointData {
 export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
   const [hoveredRun, setHoveredRun] = React.useState<{ run: Run; x: number; y: number } | null>(null);
 
-  const { lineData, allPoints, yMin, yMax, xMax } = useMemo(() => {
+  const { lineData, allPoints, edges, yMin, yMax, xMax } = useMemo(() => {
     const scored = runs
       .filter((r) => r.score !== null)
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
@@ -59,19 +59,54 @@ export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
       isLineage: lineageIds.has(run.id),
     }));
 
+    // Build a map from run.id → index in sorted array
+    const idxMap = new Map<string, number>();
+    scored.forEach((r, i) => idxMap.set(r.id, i));
+
+    // Collect all parent→child edges (both runs must have scores)
+    const edges: { parentIdx: number; childIdx: number; isBestLineage: boolean }[] = [];
+    for (const run of scored) {
+      if (run.parent_id && idxMap.has(run.parent_id)) {
+        edges.push({
+          parentIdx: idxMap.get(run.parent_id)!,
+          childIdx: idxMap.get(run.id)!,
+          isBestLineage: lineageIds.has(run.id) && lineageIds.has(run.parent_id),
+        });
+      }
+    }
+
     const allScores = scored.map((r) => r.score!);
     const range = Math.max(...allScores) - Math.min(...allScores);
 
     return {
       lineData: [{ id: "lineage", data: linePoints }],
       allPoints,
+      edges,
       yMin: Math.min(...allScores) - range * 0.05,
       yMax: Math.max(...allScores) + range * 0.05,
       xMax: scored.length - 1,
     };
   }, [runs]);
 
-  // SVG filter + custom layer for string-like line
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const EdgeLayer = ({ xScale, yScale }: any) => {
+    const nonBestEdges = edges.filter(e => !e.isBestLineage);
+    return (
+      <g>
+        {nonBestEdges.map((e, i) => {
+          const x1 = (xScale as (v: number) => number)(e.parentIdx);
+          const y1 = (yScale as (v: number) => number)(allPoints[e.parentIdx].run.score!);
+          const x2 = (xScale as (v: number) => number)(e.childIdx);
+          const y2 = (yScale as (v: number) => number)(allPoints[e.childIdx].run.score!);
+          return (
+            <line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
+              stroke="#d1d5db" strokeWidth={1} opacity={0.6} />
+          );
+        })}
+      </g>
+    );
+  };
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const StringLayer = ({ xScale, yScale }: any) => {
     const lineagePoints = allPoints
@@ -90,21 +125,14 @@ export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
 
     return (
       <g>
-        <defs>
-          <filter id="string-texture">
-            <feTurbulence type="turbulence" baseFrequency="0.04" numOctaves="4" result="noise" />
-            <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.5" />
-          </filter>
-        </defs>
-        {/* Shadow/thickness for string feel */}
-        <path d={pathD} fill="none" stroke="#8b0000" strokeWidth={3} opacity={0.3} strokeLinecap="round" strokeLinejoin="round" filter="url(#string-texture)" />
-        {/* Main string */}
-        <path d={pathD} fill="none" stroke="#cc3333" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" filter="url(#string-texture)" />
+        {/* Shadow */}
+        <path d={pathD} fill="none" stroke="#2a4e7a" strokeWidth={3} opacity={0.3} strokeLinecap="round" strokeLinejoin="round" />
+        {/* Main line */}
+        <path d={pathD} fill="none" stroke="#3f72af" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
       </g>
     );
   };
 
-  // Custom layer: draw pin dots on top of the string
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const PinLayer = ({ xScale, yScale }: any) => {
     return (
@@ -119,10 +147,10 @@ export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
               <circle
                 key={p.run.id}
                 cx={cx} cy={cy} r={3.5}
-                fill="#8b7355" stroke="#faf3e6" strokeWidth={1}
-                opacity={0.5}
+                fill={color} stroke="#ffffff" strokeWidth={1}
+                opacity={0.35}
                 className="cursor-pointer"
-                onMouseEnter={(e) => {
+                onMouseEnter={() => {
                   setHoveredRun({ run: p.run, x: cx, y: cy });
                 }}
                 onMouseLeave={() => setHoveredRun(null)}
@@ -135,7 +163,7 @@ export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
             <circle
               key={p.run.id}
               cx={cx} cy={cy} r={6}
-              fill={color} stroke="#faf3e6" strokeWidth={2}
+              fill={color} stroke="#ffffff" strokeWidth={2}
               className="cursor-pointer"
               onMouseEnter={() => setHoveredRun({ run: p.run, x: cx, y: cy })}
               onMouseLeave={() => setHoveredRun(null)}
@@ -154,22 +182,23 @@ export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
         xScale={{ type: "linear", min: 0, max: xMax }}
         yScale={{ type: "linear", min: yMin, max: yMax }}
         margin={{ top: 4, right: 24, bottom: 40, left: 56 }}
-        colors={["#cc3333"]}
+        colors={["#3f72af"]}
         lineWidth={1.5}
         curve="linear"
         enablePoints={false}
         enableGridX={false}
         gridYValues={5}
         theme={{
-          grid: { line: { stroke: "#d8d0c0", strokeWidth: 0.5, strokeDasharray: "4 3" } },
+          grid: { line: { stroke: "#e5e7eb", strokeWidth: 0.5, strokeDasharray: "4 3" } },
           axis: {
-            ticks: { text: { fill: "#8b7355", fontSize: 11, fontFamily: "'Courier Prime', monospace" } },
-            legend: { text: { fill: "#8b7355", fontSize: 11, fontFamily: "'Courier Prime', monospace" } },
+            ticks: { text: { fill: "#6b7280", fontSize: 11, fontFamily: "'IBM Plex Mono', monospace" } },
+            legend: { text: { fill: "#6b7280", fontSize: 11, fontFamily: "'IBM Plex Mono', monospace" } },
           },
         }}
         axisBottom={{
           tickSize: 0,
           tickPadding: 8,
+          tickValues: Array.from({ length: xMax + 1 }, (_, i) => i),
           format: (v) => `#${v}`,
           legend: "Experiment #",
           legendOffset: 30,
@@ -188,6 +217,7 @@ export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
         layers={[
           "grid",
           "axes",
+          EdgeLayer,
           StringLayer,
           PinLayer,
         ]}
@@ -196,7 +226,7 @@ export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
       {/* Tooltip */}
       {hoveredRun && (
         <div
-          className="absolute pointer-events-none z-20 paper-card p-3 max-w-xs"
+          className="absolute pointer-events-none z-20 card p-3 max-w-xs"
           style={{
             left: hoveredRun.x + 70,
             top: hoveredRun.y - 10,
@@ -205,15 +235,15 @@ export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
         >
           <div className="flex items-center gap-2 mb-1">
             <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: getAgentColor(hoveredRun.run.agent_id) }} />
-            <span className="font-[family-name:var(--font-handwritten)] text-[16px] font-semibold text-[var(--accent-blue)]">
+            <span className="text-sm font-semibold text-[var(--color-text)]">
               {hoveredRun.run.agent_id}
             </span>
-            <span className="text-[var(--text-dim)] text-[11px] font-[family-name:var(--font-typewriter)]">{relativeTime(hoveredRun.run.created_at)}</span>
+            <span className="text-[var(--color-text-secondary)] text-[11px]">{relativeTime(hoveredRun.run.created_at)}</span>
           </div>
-          <div className="font-[family-name:var(--font-typewriter)] text-lg font-bold text-[var(--text-dark)]">
+          <div className="font-[family-name:var(--font-ibm-plex-mono)] text-lg font-bold text-[var(--color-text)]">
             {hoveredRun.run.score?.toFixed(3)}
           </div>
-          <div className="font-[family-name:var(--font-typewriter)] text-[11px] text-[var(--text-dim)] mt-0.5">{hoveredRun.run.tldr}</div>
+          <div className="text-xs text-[var(--color-text-secondary)] mt-0.5">{hoveredRun.run.tldr}</div>
         </div>
       )}
     </div>

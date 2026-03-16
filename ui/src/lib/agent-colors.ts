@@ -7,8 +7,10 @@ const AGENT_COLORS: Record<string, string> = {
 };
 
 const FALLBACK_COLORS = [
-  "#e08c00", "#16a34a", "#2563eb", "#7c3aed", "#dc2626",
+  "#3f72af", "#16a34a", "#e08c00", "#7c3aed", "#dc2626",
   "#0891b2", "#c2410c", "#0d9488", "#be185d", "#4f46e5",
+  "#059669", "#d97706", "#7c2d12", "#1d4ed8", "#9333ea",
+  "#0e7490", "#b91c1c", "#15803d", "#6d28d9", "#ca8a04",
 ];
 
 export function getAgentColor(agentId: string): string {

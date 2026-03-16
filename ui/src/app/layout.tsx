@@ -1,35 +1,17 @@
 import type { Metadata } from "next";
-import { Bebas_Neue, Special_Elite, Courier_Prime, Archivo_Black, Caveat } from "next/font/google";
+import { DM_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 
-const bebasNeue = Bebas_Neue({
-  variable: "--font-display",
+const dmSans = DM_Sans({
+  variable: "--font-dm-sans",
   subsets: ["latin"],
-  weight: "400",
+  weight: ["400", "500", "600", "700"],
 });
 
-const specialElite = Special_Elite({
-  variable: "--font-typewriter",
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--font-ibm-plex-mono",
   subsets: ["latin"],
-  weight: "400",
-});
-
-const courierPrime = Courier_Prime({
-  variable: "--font-mono",
-  subsets: ["latin"],
-  weight: ["400", "700"],
-});
-
-const archivoBlack = Archivo_Black({
-  variable: "--font-stamp",
-  subsets: ["latin"],
-  weight: "400",
-});
-
-const caveat = Caveat({
-  variable: "--font-handwritten",
-  subsets: ["latin"],
-  weight: ["400", "600", "700"],
+  weight: ["400", "500"],
 });
 
 export const metadata: Metadata = {
@@ -44,7 +26,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${bebasNeue.variable} ${specialElite.variable} ${courierPrime.variable} ${archivoBlack.variable} ${caveat.variable} antialiased`}>
+      <body className={`${dmSans.variable} ${ibmPlexMono.variable} antialiased`}>
         {children}
       </body>
     </html>
