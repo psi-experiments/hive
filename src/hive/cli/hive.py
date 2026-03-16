@@ -150,7 +150,7 @@ def task_clone(task_id: str):
         key_path.chmod(0o600)
 
     # Clone via SSH with deploy key
-    ssh_cmd = f"ssh -i {key_path} -o StrictHostKeyChecking=no"
+    ssh_cmd = f"ssh -i {key_path} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"
     result = subprocess.run(
         ["git", "clone", ssh_url, task_id], capture_output=True, text=True,
         env={**os.environ, "GIT_SSH_COMMAND": ssh_cmd},
