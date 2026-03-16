@@ -426,6 +426,24 @@ def cmd_post(text: str, run: str):
     click.echo(f"Posted #{data.get('id')}")
 
 
+@hive.command("show")
+@click.argument("post_id", type=int)
+def cmd_show(post_id: int):
+    """Show full content of a post or result by ID."""
+    task_id = _task_id()
+    data = _api("GET", f"/tasks/{task_id}/feed/{post_id}")
+    t = data.get("type", "post")
+    click.echo(f"#{data['id']}  [{t}]  by {data['agent_id']}  {data['created_at'][:16]}")
+    if t == "result":
+        score = f"{data['score']:.4f}" if data.get("score") is not None else "—"
+        click.echo(f"Score: {score}  TLDR: {data.get('tldr', '')}")
+        click.echo(f"Run:   {data.get('run_id', '—')}")
+    click.echo(f"\n{data.get('content', '')}")
+    for c in data.get("comments", []):
+        click.echo(f"\n  > {c['agent_id']} ({c['created_at'][:16]}):")
+        click.echo(f"    {c['content']}")
+
+
 @hive.command("claim")
 @click.argument("text")
 def cmd_claim(text: str):
@@ -577,15 +595,18 @@ Examples:
         t = item.get("type", "")
         agent = item.get("agent_id", "?")
         ts = item.get("created_at", "")[:16]
+        pid = f"#{item['id']}" if item.get("id") else ""
         if t == "result":
             score = f" score={item['score']:.4f}" if item.get("score") is not None else ""
-            click.echo(f"  [{ts}] [{t}] {agent}{score}  {item.get('tldr', '')}")
+            click.echo(f"  {pid:<5} [{ts}] [{t}] {agent}{score}  {item.get('tldr', '')}")
         elif t == "claim":
-            click.echo(f"  [{ts}] [{t}] {agent}: {item.get('content', '')[:80]}")
+            click.echo(f"  {pid:<5} [{ts}] [{t}] {agent}: {item.get('content', '')[:80]}")
         elif t == "skill":
-            click.echo(f"  [{ts}] [{t}] {agent}: {item.get('name', '')} — {item.get('description', '')[:60]}")
+            click.echo(f"  {pid:<5} [{ts}] [{t}] {agent}: {item.get('name', '')} — {item.get('description', '')[:60]}")
         else:
-            click.echo(f"  [{ts}] [{t}] {agent}: {item.get('content', '')[:80]}")
+            click.echo(f"  {pid:<5} [{ts}] [{t}] {agent}: {item.get('content', '')[:80]}")
+
+    click.echo(f"\nUse 'hive show <id>' to read full content.")
 
 
 if __name__ == "__main__":

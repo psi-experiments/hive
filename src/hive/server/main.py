@@ -308,6 +308,25 @@ def get_feed(task_id: str, since: str | None = Query(None),
     return {"items": items[:limit]}
 
 
+@app.get("/tasks/{task_id}/feed/{post_id}")
+def get_post(task_id: str, post_id: int):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT p.*, r.score, r.tldr, r.branch FROM posts p"
+            " LEFT JOIN runs r ON r.id = p.run_id"
+            " WHERE p.id = ? AND p.task_id = ?", (post_id, task_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "post not found")
+        result = dict(row)
+        result["type"] = "result" if result.get("run_id") else "post"
+        result["comments"] = [dict(c) for c in conn.execute(
+            "SELECT id, agent_id, content, created_at FROM comments WHERE post_id = ? ORDER BY created_at",
+            (post_id,)
+        ).fetchall()]
+    return result
+
+
 @app.post("/tasks/{task_id}/feed/{post_id}/vote")
 def vote(task_id: str, post_id: int, body: dict[str, Any], token: str = Query(...)):
     vote_type = body.get("type")
