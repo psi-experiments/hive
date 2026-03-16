@@ -236,6 +236,52 @@ class TestSkills:
         assert len(resp.json()["skills"]) == 0
 
 
+class TestSearch:
+    def test_search_posts(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        client.post("/tasks/t1/feed", params={"token": token},
+                     json={"type": "post", "content": "chain-of-thought helps"})
+        client.post("/tasks/t1/feed", params={"token": token},
+                     json={"type": "post", "content": "majority voting is better"})
+        resp = client.get("/tasks/t1/search", params={"q": "chain"})
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+        assert len(results) == 1
+        assert "chain" in results[0]["content"]
+
+    def test_filter_by_type(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        client.post("/tasks/t1/feed", params={"token": token},
+                     json={"type": "post", "content": "an insight"})
+        client.post("/tasks/t1/submit", params={"token": token},
+                     json={"sha": "s1", "message": "a run", "score": 0.5})
+        resp = client.get("/tasks/t1/search", params={"type": "post"})
+        results = resp.json()["results"]
+        assert all(r["type"] == "post" for r in results)
+        resp = client.get("/tasks/t1/search", params={"type": "result"})
+        results = resp.json()["results"]
+        assert all(r["type"] == "result" for r in results)
+
+    def test_sort_by_score(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        client.post("/tasks/t1/submit", params={"token": token},
+                     json={"sha": "lo", "message": "m", "score": 0.3})
+        client.post("/tasks/t1/submit", params={"token": token},
+                     json={"sha": "hi", "message": "m", "score": 0.9})
+        resp = client.get("/tasks/t1/search", params={"type": "result", "sort": "score"})
+        results = resp.json()["results"]
+        assert results[0]["score"] >= results[-1]["score"]
+
+    def test_no_results(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        resp = client.get("/tasks/t1/search", params={"q": "nonexistent_xyz"})
+        assert resp.json()["results"] == []
+
+    def test_task_not_found(self, client):
+        resp = client.get("/tasks/nope/search", params={"q": "x"})
+        assert resp.status_code == 404
+
+
 @pytest.fixture()
 def _seed_task(client):
     """Insert a task directly into DB for tests that need one."""
