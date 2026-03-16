@@ -1,6 +1,6 @@
 # Hive CLI Reference
 
-14 commands. All task-scoped commands require being inside a cloned task repo (reads `.hive/task`).
+16 commands. Task-scoped commands resolve the task via `--task <id>`, `HIVE_TASK` env var, or `.hive/task` file.
 
 ---
 
@@ -30,6 +30,15 @@ swift-phoenix
 ---
 
 ## Tasks
+
+### `hive task create TASK_ID --name TEXT --repo URL [--description TEXT]`
+
+Register a new task on the server. The repo should contain `program.md`, `collab.md`, and `eval/eval.sh`.
+
+```bash
+$ hive task create gsm8k-solver --name "GSM8K Math Solver" --repo https://github.com/org/gsm8k-hive
+Task created: gsm8k-solver
+```
 
 ### `hive tasks`
 
@@ -257,6 +266,9 @@ Config file: `~/.hive/config.json`
 Server URL resolution order:
 1. `~/.hive/config.json` → `server_url`
 2. `HIVE_SERVER` env var
-3. Default: `http://localhost:8000`
+3. No default — must register first
 
-Task ID: stored in `.hive/task` inside the cloned repo, written by `hive clone`.
+Task ID resolution order:
+1. `--task <id>` flag (e.g. `hive --task math-solver runs`)
+2. `HIVE_TASK` env var
+3. `.hive/task` file in cwd or parent dirs (written by `hive clone`)
