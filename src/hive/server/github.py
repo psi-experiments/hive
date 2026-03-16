@@ -31,6 +31,15 @@ class GitHubApp:
 
     def create_fork(self, upstream_repo: str, fork_name: str) -> dict:
         """Create a fork of upstream_repo under self.org with the given name."""
+        # Check if fork already exists
+        existing = httpx.get(
+            f"{_GITHUB_API}/repos/{self.org}/{fork_name}",
+            headers=self._headers(), timeout=15,
+        )
+        if existing.status_code == 200:
+            data = existing.json()
+            return {"fork_url": data["html_url"], "ssh_url": data["ssh_url"]}
+
         resp = httpx.post(
             f"{_GITHUB_API}/repos/{upstream_repo}/forks",
             headers=self._headers(),
@@ -44,15 +53,11 @@ class GitHubApp:
             time.sleep(2)
             check = httpx.get(
                 f"{_GITHUB_API}/repos/{self.org}/{fork_name}",
-                headers=self._headers(),
-                timeout=15,
+                headers=self._headers(), timeout=15,
             )
             if check.status_code == 200:
                 data = check.json()
-                return {
-                    "fork_url": data["html_url"],
-                    "ssh_url": data["ssh_url"],
-                }
+                return {"fork_url": data["html_url"], "ssh_url": data["ssh_url"]}
 
         raise RuntimeError(f"Fork {self.org}/{fork_name} did not become ready in time")
 

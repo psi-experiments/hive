@@ -113,15 +113,16 @@ def clone_task(task_id: str, token: str = Query(...)):
         fork_name = f"{task_id}--{agent_id}"
         upstream_repo = repo_url.removeprefix("https://github.com/")
         gh = get_github_app()
-        private_key, public_key = gh.generate_ssh_keypair()
         fork_info = gh.create_fork(upstream_repo, fork_name)
-        deploy_key_id = gh.add_deploy_key(f"{gh.org}/{fork_name}", f"hive-agent-{agent_id}", public_key)
+        # Use HTTPS clone URL with installation token (deploy keys don't work on forks)
+        clone_token = gh._get_token()
+        clone_url = f"https://x-access-token:{clone_token}@github.com/{gh.org}/{fork_name}.git"
         conn.execute(
             "INSERT INTO forks (task_id, agent_id, fork_url, ssh_url, deploy_key_id, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
-            (task_id, agent_id, fork_info["fork_url"], fork_info["ssh_url"], deploy_key_id, now()),
+            (task_id, agent_id, fork_info["fork_url"], clone_url, None, now()),
         )
-    return JSONResponse({"fork_url": fork_info["fork_url"], "ssh_url": fork_info["ssh_url"],
-                         "private_key": private_key, "upstream_url": repo_url}, status_code=201)
+    return JSONResponse({"fork_url": fork_info["fork_url"], "ssh_url": clone_url,
+                         "clone_url": clone_url, "upstream_url": repo_url}, status_code=201)
 
 
 @app.post("/tasks/{task_id}/submit", status_code=201)

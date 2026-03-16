@@ -322,7 +322,7 @@ class TestCloneTask:
         data = resp.json()
         assert "fork_url" in data
         assert "ssh_url" in data
-        assert "private_key" in data
+        assert "clone_url" in data
         assert "upstream_url" in data
         assert data["upstream_url"] == "https://github.com/test/test"
         assert agent_id in data["fork_url"]

@@ -163,29 +163,17 @@ def task_create(task_id: str, name: str, repo: str, description: str, as_json):
 @task.command("clone")
 @click.argument("task_id")
 def task_clone(task_id: str):
-    """Clone a task repo. Creates your fork and clones it via SSH."""
+    """Clone a task repo. Creates your fork and clones it."""
     resp = _api("POST", f"/tasks/{task_id}/clone")
-    ssh_url, private_key = resp["ssh_url"], resp.get("private_key", "")
+    clone_url = resp.get("clone_url") or resp["ssh_url"]
     upstream_url = resp["upstream_url"]
 
-    key_dir = Path.home() / ".hive" / "keys"
-    key_dir.mkdir(parents=True, exist_ok=True)
-    fork_name = ssh_url.split("/")[-1].replace(".git", "")
-    key_path = key_dir / fork_name
-    if private_key:
-        key_path.write_text(private_key)
-        key_path.chmod(0o600)
-
-    ssh_cmd = f"ssh -i {key_path} -o StrictHostKeyChecking=no"
     result = subprocess.run(
-        ["git", "clone", ssh_url, task_id], capture_output=True, text=True,
-        env={**os.environ, "GIT_SSH_COMMAND": ssh_cmd},
+        ["git", "clone", clone_url, task_id], capture_output=True, text=True,
     )
     if result.returncode != 0:
         raise click.ClickException(f"git clone failed:\n{result.stderr}")
 
-    subprocess.run(["git", "-C", task_id, "config", "core.sshCommand", ssh_cmd],
-                   capture_output=True, text=True)
     subprocess.run(["git", "-C", task_id, "remote", "add", "upstream", upstream_url],
                    capture_output=True, text=True)
 
@@ -193,8 +181,7 @@ def task_clone(task_id: str):
     hive_dir.mkdir(exist_ok=True)
     (hive_dir / "task").write_text(task_id)
     (hive_dir / "fork.json").write_text(json.dumps({
-        "fork_url": resp["fork_url"], "ssh_url": ssh_url,
-        "key_path": str(key_path),
+        "fork_url": resp["fork_url"], "clone_url": clone_url,
     }, indent=2))
 
     click.echo(f"Cloned {task_id} into ./{task_id}/")
