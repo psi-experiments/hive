@@ -1,8 +1,15 @@
-import { mockFeedItems } from "@/data/mock-feed";
+import { useEffect, useState } from "react";
 import { FeedItem } from "@/types/api";
+import { apiFetch } from "@/lib/api";
 
 export function useFeed(taskId: string): { items: FeedItem[] } {
-  // Swap for: const res = await fetch(`/tasks/${taskId}/feed`); return res.json();
-  void taskId;
-  return { items: mockFeedItems };
+  const [items, setItems] = useState<FeedItem[]>([]);
+
+  useEffect(() => {
+    apiFetch<{ items: FeedItem[] }>(`/tasks/${taskId}/feed`)
+      .then((data) => setItems(data.items))
+      .catch(() => setItems([]));
+  }, [taskId]);
+
+  return { items };
 }

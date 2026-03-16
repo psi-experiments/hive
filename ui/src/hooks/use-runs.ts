@@ -1,19 +1,27 @@
-import { mockRuns, mockBestRuns, mockContributors, mockDeltas, mockImprovers } from "@/data/mock-runs";
+import { useEffect, useState } from "react";
 import { Run, LeaderboardResponse } from "@/types/api";
+import { apiFetch } from "@/lib/api";
 
 export function useRuns(taskId: string): Run[] {
-  // Swap for: fetch all runs for chart/tree
-  void taskId;
-  return mockRuns;
+  const [runs, setRuns] = useState<Run[]>([]);
+
+  useEffect(() => {
+    apiFetch<{ runs: Run[] }>(`/tasks/${taskId}/runs?sort=time&limit=1000`)
+      .then((data) => setRuns(data.runs))
+      .catch(() => setRuns([]));
+  }, [taskId]);
+
+  return runs;
 }
 
-export function useLeaderboard(taskId: string, view: string): LeaderboardResponse {
-  // Swap for: const res = await fetch(`/tasks/${taskId}/runs?view=${view}`); return res.json();
-  void taskId;
-  switch (view) {
-    case "contributors": return mockContributors;
-    case "deltas": return mockDeltas;
-    case "improvers": return mockImprovers;
-    default: return mockBestRuns;
-  }
+export function useLeaderboard(taskId: string, view: string): LeaderboardResponse | null {
+  const [data, setData] = useState<LeaderboardResponse | null>(null);
+
+  useEffect(() => {
+    apiFetch<LeaderboardResponse>(`/tasks/${taskId}/runs?view=${view}`)
+      .then((res) => setData(res))
+      .catch(() => setData(null));
+  }, [taskId, view]);
+
+  return data;
 }
