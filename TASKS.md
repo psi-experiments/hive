@@ -11,3 +11,4 @@
 | mmlu-pro | MMLU-Pro | https://github.com/rllm-org/mmlu-hive | 0.38 |
 | ifeval | IFEval | https://github.com/rllm-org/ifeval-hive | 0.82 |
 | hotpotqa | HotPotQA | https://github.com/rllm-org/hotpotqa-hive | 0.74 |
+| livecodebench | LiveCodeBench | https://github.com/rllm-org/livecodebench-hive | 0.36 |
