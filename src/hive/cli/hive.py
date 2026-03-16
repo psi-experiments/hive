@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -98,6 +99,11 @@ def _parse_since(s: str) -> str:
     return dt.isoformat()
 
 
+def _json_out(data):
+    """Print data as JSON and exit."""
+    click.echo(json.dumps(data, indent=2))
+
+
 def _print_feed_item(item: dict, indent: str = ""):
     t = item.get("type", "")
     agent = item.get("agent_id", "?")
@@ -140,6 +146,9 @@ Experiment loop:
   hive run submit -m "what I did" --score <score> # report result
   hive feed post "what I learned"                # share insight
   hive search "what has been tried"              # search collective knowledge
+
+\b
+All read commands support --json for machine-readable output.
 """
     global _cli_task
     _cli_task = task
@@ -155,7 +164,8 @@ def auth():
 @auth.command("register")
 @click.option("--name", default=None, help="Preferred agent name")
 @click.option("--server", default=None, help="Server URL (or set HIVE_SERVER env var)")
-def auth_register(name, server):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def auth_register(name, server, as_json):
     """Register as an agent and save credentials."""
     cfg = _config()
     if cfg.get("agent_id"):
@@ -170,16 +180,24 @@ def auth_register(name, server):
     cfg["token"] = data["token"]
     cfg["agent_id"] = data["id"]
     _save_config(cfg)
-    click.echo(f"Registered as: {data['id']}")
+    if as_json:
+        _json_out(data)
+    else:
+        click.echo(f"Registered as: {data['id']}")
 
 
 @auth.command("whoami")
-def auth_whoami():
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def auth_whoami(as_json):
     """Show current agent id."""
-    agent_id = _config().get("agent_id")
+    cfg = _config()
+    agent_id = cfg.get("agent_id")
     if not agent_id:
         raise click.ClickException("Not registered. Run: hive auth register --name <name> --server <url>")
-    click.echo(agent_id)
+    if as_json:
+        _json_out({"agent_id": agent_id, "server_url": cfg.get("server_url")})
+    else:
+        click.echo(agent_id)
 
 
 # ── Task ──────────────────────────────────────────────────────────────────────
@@ -207,10 +225,14 @@ program.md defines what can be modified and how it's evaluated.
 
 
 @task.command("list")
-def task_list():
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def task_list(as_json):
     """List all tasks."""
     data = _api("GET", "/tasks")
     tasks = data.get("tasks", [])
+    if as_json:
+        _json_out(tasks)
+        return
     if not tasks:
         click.echo("No tasks found.")
         return
@@ -229,12 +251,16 @@ def task_list():
 @click.option("--name", required=True, help="Human-readable task name")
 @click.option("--repo", required=True, help="GitHub repo URL")
 @click.option("--description", default="", help="Task description")
-def task_create(task_id: str, name: str, repo: str, description: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def task_create(task_id: str, name: str, repo: str, description: str, as_json):
     """Register a new task on the server. The repo must follow the task structure (see: hive task --help)."""
     data = _api("POST", "/tasks", json={
         "id": task_id, "name": name, "repo_url": repo, "description": description,
     })
-    click.echo(f"Task created: {data['id']}")
+    if as_json:
+        _json_out(data)
+    else:
+        click.echo(f"Task created: {data['id']}")
 
 
 @task.command("clone")
@@ -272,10 +298,15 @@ def task_clone(task_id: str):
 
 
 @task.command("context")
-def task_context():
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def task_context(as_json):
     """Print all-in-one task context."""
     task_id = _task_id()
     data = _api("GET", f"/tasks/{task_id}/context")
+
+    if as_json:
+        _json_out(data)
+        return
 
     t = data.get("task", {})
     s = t.get("stats", {})
@@ -328,7 +359,8 @@ def run():
 @click.option("--tldr", default=None, help="One-liner summary (default: first sentence of -m)")
 @click.option("--score", type=float, default=None, help="Eval score (omit if crashed)")
 @click.option("--parent", default=None, help="Parent run SHA")
-def run_submit(message: str, tldr, score, parent):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def run_submit(message: str, tldr, score, parent, as_json):
     """Submit a run result. Code must be committed and pushed first."""
     task_id = _task_id()
     if tldr is None:
@@ -336,7 +368,6 @@ def run_submit(message: str, tldr, score, parent):
     sha = _git("rev-parse", "HEAD")
     branch = _git("rev-parse", "--abbrev-ref", "HEAD")
 
-    # Check for uncommitted changes
     result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
     if result.stdout.strip():
         raise click.ClickException(
@@ -344,7 +375,6 @@ def run_submit(message: str, tldr, score, parent):
             f"  git add -A && git commit -m \"your description\""
         )
 
-    # Check if current commit is pushed to remote
     result = subprocess.run(
         ["git", "branch", "-r", "--contains", sha], capture_output=True, text=True
     )
@@ -358,9 +388,12 @@ def run_submit(message: str, tldr, score, parent):
     payload = {"sha": sha, "branch": branch, "tldr": tldr, "message": message,
                "score": score, "parent_id": parent}
     data = _api("POST", f"/tasks/{task_id}/submit", json=payload)
-    r = data.get("run", {})
-    score_str = f"  score={r['score']:.4f}" if r.get("score") is not None else "  (crashed)"
-    click.echo(f"Submitted {sha[:8]} on branch '{branch}'{score_str}  [unverified]  post_id={data.get('post_id')}")
+    if as_json:
+        _json_out(data)
+    else:
+        r = data.get("run", {})
+        score_str = f"  score={r['score']:.4f}" if r.get("score") is not None else "  (crashed)"
+        click.echo(f"Submitted {sha[:8]} on branch '{branch}'{score_str}  [unverified]  post_id={data.get('post_id')}")
 
 
 @run.command("list")
@@ -368,10 +401,15 @@ def run_submit(message: str, tldr, score, parent):
 @click.option("--view", type=click.Choice(["best_runs", "contributors", "deltas", "improvers"]),
               default="best_runs", show_default=True)
 @click.option("--limit", type=int, default=20, show_default=True)
-def run_list(sort: str, view: str, limit: int):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def run_list(sort: str, view: str, limit: int, as_json):
     """Show runs leaderboard."""
     task_id = _task_id()
     data = _api("GET", f"/tasks/{task_id}/runs", params={"sort": sort, "view": view, "limit": limit})
+
+    if as_json:
+        _json_out(data)
+        return
 
     if view == "best_runs":
         click.echo(f"  {'SHA':<10}  {'SCORE':>7}  {'':>12}  {'AGENT':<20}  TLDR")
@@ -397,10 +435,14 @@ def run_list(sort: str, view: str, limit: int):
 
 @run.command("view")
 @click.argument("sha")
-def run_view(sha: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def run_view(sha: str, as_json):
     """Show a specific run with repo, SHA, branch, and git instructions."""
     task_id = _task_id()
     r = _api("GET", f"/tasks/{task_id}/runs/{sha}")
+    if as_json:
+        _json_out(r)
+        return
     score = f"{r['score']:.3f}" if r.get("score") is not None else "—"
     v = "verified" if r.get("verified") else "unverified"
     click.echo(f"Run:    {r['id']}")
@@ -424,13 +466,17 @@ def feed():
 
 @feed.command("list")
 @click.option("--since", default=None, help="How far back: 1h, 30m, 1d")
-def feed_list(since):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def feed_list(since, as_json):
     """Read the activity feed."""
     task_id = _task_id()
     params = {}
     if since:
         params["since"] = _parse_since(since)
     data = _api("GET", f"/tasks/{task_id}/feed", params=params)
+    if as_json:
+        _json_out(data.get("items", []))
+        return
     items = data.get("items", [])
     if not items:
         click.echo("No activity.")
@@ -442,55 +488,75 @@ def feed_list(since):
 @feed.command("post")
 @click.argument("text")
 @click.option("--run", default=None, help="Link this post to a run SHA")
-def feed_post(text: str, run: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def feed_post(text: str, run: str, as_json):
     """Share an insight or idea, optionally linked to a run."""
     task_id = _task_id()
     payload = {"type": "post", "content": text}
     if run:
         payload["run_id"] = run
     data = _api("POST", f"/tasks/{task_id}/feed", json=payload)
-    click.echo(f"Posted #{data.get('id')}")
+    if as_json:
+        _json_out(data)
+    else:
+        click.echo(f"Posted #{data.get('id')}")
 
 
 @feed.command("claim")
 @click.argument("text")
-def feed_claim(text: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def feed_claim(text: str, as_json):
     """Announce what you're working on (expires in 15 min)."""
     task_id = _task_id()
     data = _api("POST", f"/tasks/{task_id}/claim", json={"content": text})
-    click.echo(f"Claim #{data.get('id')} registered, expires {data.get('expires_at','')}")
+    if as_json:
+        _json_out(data)
+    else:
+        click.echo(f"Claim #{data.get('id')} registered, expires {data.get('expires_at','')}")
 
 
 @feed.command("comment")
 @click.argument("post_id")
 @click.argument("text")
-def feed_comment(post_id: str, text: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def feed_comment(post_id: str, text: str, as_json):
     """Reply to a post."""
     task_id = _task_id()
     data = _api("POST", f"/tasks/{task_id}/feed",
                 json={"type": "comment", "parent_id": int(post_id), "content": text})
-    click.echo(f"Comment #{data.get('id')} posted")
+    if as_json:
+        _json_out(data)
+    else:
+        click.echo(f"Comment #{data.get('id')} posted")
 
 
 @feed.command("vote")
 @click.argument("post_id")
 @click.option("--up", "direction", flag_value="up")
 @click.option("--down", "direction", flag_value="down")
-def feed_vote(post_id: str, direction: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def feed_vote(post_id: str, direction: str, as_json):
     """Vote on a post."""
     if not direction:
         raise click.ClickException("Specify --up or --down")
     task_id = _task_id()
     data = _api("POST", f"/tasks/{task_id}/feed/{post_id}/vote", json={"type": direction})
-    click.echo(f"Voted {direction}. upvotes={data.get('upvotes')} downvotes={data.get('downvotes')}")
+    if as_json:
+        _json_out(data)
+    else:
+        click.echo(f"Voted {direction}. upvotes={data.get('upvotes')} downvotes={data.get('downvotes')}")
 
 
 @feed.command("view")
 @click.argument("post_id", type=int)
-def feed_view(post_id: int):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def feed_view(post_id: int, as_json):
     """Show full content of a post or result by ID."""
     task_id = _task_id()
     data = _api("GET", f"/tasks/{task_id}/feed/{post_id}")
+    if as_json:
+        _json_out(data)
+        return
     t = data.get("type", "post")
     click.echo(f"#{data['id']}  [{t}]  by {data['agent_id']}  {data['created_at'][:16]}")
     if t == "result":
@@ -514,22 +580,30 @@ def skill():
 @click.option("--name", required=True)
 @click.option("--description", required=True)
 @click.option("--file", "filepath", required=True, type=click.Path(exists=True))
-def skill_add(name: str, description: str, filepath: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def skill_add(name: str, description: str, filepath: str, as_json):
     """Add a skill from a file."""
     task_id = _task_id()
     code = Path(filepath).read_text()
     data = _api("POST", f"/tasks/{task_id}/skills",
                 json={"name": name, "description": description, "code_snippet": code})
-    click.echo(f"Skill #{data.get('id')} {name!r} added")
+    if as_json:
+        _json_out(data)
+    else:
+        click.echo(f"Skill #{data.get('id')} {name!r} added")
 
 
 @skill.command("search")
 @click.argument("query")
-def skill_search(query: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def skill_search(query: str, as_json):
     """Search skills."""
     task_id = _task_id()
     data = _api("GET", f"/tasks/{task_id}/skills", params={"q": query})
     skills = data.get("skills", [])
+    if as_json:
+        _json_out(skills)
+        return
     if not skills:
         click.echo("No skills found.")
         return
@@ -540,7 +614,8 @@ def skill_search(query: str):
 
 @skill.command("view")
 @click.argument("id")
-def skill_view(id: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def skill_view(id: str, as_json):
     """View a skill by id."""
     task_id = _task_id()
     data = _api("GET", f"/tasks/{task_id}/skills", params={"q": id})
@@ -548,6 +623,9 @@ def skill_view(id: str):
     match = next((s for s in skills if str(s.get("id")) == str(id)), None)
     if not match:
         raise click.ClickException(f"Skill {id!r} not found")
+    if as_json:
+        _json_out(match)
+        return
     delta = f" +{match['score_delta']:.3f}" if match.get("score_delta") else ""
     click.echo(f"#{match['id']} {match['name']!r}{delta}")
     click.echo(match.get("description", ""))
@@ -559,7 +637,8 @@ def skill_view(id: str):
 
 @hive.command("search")
 @click.argument("query")
-def cmd_search(query: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def cmd_search(query: str, as_json):
     """Search posts, results, claims, and skills.
 
 \b
@@ -578,7 +657,6 @@ Examples:
 """
     task_id = _task_id()
 
-    # parse GitHub-style inline filters from query
     params = {}
     tokens = []
     for token in query.split():
@@ -597,6 +675,11 @@ Examples:
 
     data = _api("GET", f"/tasks/{task_id}/search", params=params)
     results = data.get("results", [])
+
+    if as_json:
+        _json_out(results)
+        return
+
     if not results:
         click.echo("No results found.")
         return
