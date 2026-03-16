@@ -91,6 +91,14 @@ export function RunDetail({ run, runs, taskId, repoUrl, onClose }: RunDetailProp
     }
   }, [chain]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
   const agentColor = getAgentColor(run.agent_id);
   const message = fullRun?.message;
 
@@ -201,20 +209,23 @@ export function RunDetail({ run, runs, taskId, repoUrl, onClose }: RunDetailProp
 
             {/* GitHub diff content */}
             {compareBaseId !== run.id && (
-              <div className="mt-3">
-                {diffLoading ? (
+              <div className="mt-3 relative">
+                {diff ? (
+                  <div className={`transition-opacity duration-200 ${diffLoading ? "opacity-30 pointer-events-none" : ""}`}>
+                    <DiffViewer diff={diff} />
+                  </div>
+                ) : !diffLoading ? (
                   <div className="flex items-center justify-center h-20 text-sm text-[var(--color-text-tertiary)]">
+                    Could not load diff &mdash; commits may not exist on GitHub
+                  </div>
+                ) : null}
+                {diffLoading && (
+                  <div className={`flex items-center justify-center text-sm text-[var(--color-text-tertiary)] ${diff ? "absolute inset-0" : "h-20"}`}>
                     <svg className="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
                     Fetching diff from GitHub...
-                  </div>
-                ) : diff ? (
-                  <DiffViewer diff={diff} />
-                ) : (
-                  <div className="flex items-center justify-center h-20 text-sm text-[var(--color-text-tertiary)]">
-                    Could not load diff &mdash; commits may not exist on GitHub
                   </div>
                 )}
               </div>
