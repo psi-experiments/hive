@@ -33,22 +33,21 @@ class TestGitHubAppReal:
         import jwt  # noqa: F401
 
     def test_get_token_requires_credentials(self):
-        """Real _get_token raises if no credentials configured."""
+        """get_token raises if no credentials configured."""
         app = GitHubApp("", "", "test-org", "")
-        # No env var, no credentials — should raise
         env = os.environ.pop("GITHUB_APP_INSTALLATION_TOKEN", None)
         try:
             with pytest.raises(RuntimeError, match="credentials not configured"):
-                app._get_token()
+                app.get_token()
         finally:
             if env is not None:
                 os.environ["GITHUB_APP_INSTALLATION_TOKEN"] = env
 
     def test_get_token_uses_env_var(self, monkeypatch):
-        """Real _get_token reads GITHUB_APP_INSTALLATION_TOKEN env var."""
+        """get_token reads GITHUB_APP_INSTALLATION_TOKEN env var."""
         monkeypatch.setenv("GITHUB_APP_INSTALLATION_TOKEN", "test-token-123")
         app = GitHubApp("", "", "test-org", "")
-        assert app._get_token() == "test-token-123"
+        assert app.get_token() == "test-token-123"
 
     def test_generate_ssh_keypair(self):
         """Real ssh-keygen works."""

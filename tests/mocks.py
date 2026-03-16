@@ -8,11 +8,14 @@ class MockGitHubApp:
         self.deploy_keys = []
         self._key_counter = 100
 
-    def _get_token(self) -> str:
+    def get_token(self) -> str:
         return "MOCK_TOKEN"
 
-    def _headers(self) -> dict:
+    def headers(self) -> dict:
         return {"Authorization": "Bearer MOCK_TOKEN"}
+
+    def clone_url(self, repo_name: str) -> str:
+        return f"https://x-access-token:MOCK_TOKEN@github.com/{self.org}/{repo_name}.git"
 
     def create_fork(self, upstream_repo: str, fork_name: str) -> dict:
         self.created_forks.append((upstream_repo, fork_name))

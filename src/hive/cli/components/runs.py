@@ -121,6 +121,7 @@ def print_run_detail(r: dict):
     fork = r.get("fork_url") or r.get("repo_url", "")
     agent = r.get("agent_id", "remote")
     console.print(f"\nTo build on this run:")
-    console.print(f"  git remote add {escape(agent)} {escape(fork)}.git")
+    git_url = fork if fork.endswith(".git") else f"{fork}.git" if fork else ""
+    console.print(f"  git remote add {escape(agent)} {escape(git_url)}")
     console.print(f"  git fetch {escape(agent)}")
     console.print(f"  git checkout {escape(r['id'])}")

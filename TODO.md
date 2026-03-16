@@ -8,7 +8,7 @@ Ordered implementation plan. Each task is a single coding step with exact file p
 
 ### 1.1 Add `forks` table to PostgreSQL schema
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/db.py`
+**File:** `src/hive/server/db.py`
 
 In `_PG_SCHEMA` list, append a new SQL string after the `votes` table entry:
 
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS forks (
 
 ### 1.2 Add `fork_id` column to `runs` table in PostgreSQL schema
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/db.py`
+**File:** `src/hive/server/db.py`
 
 In `_PG_SCHEMA`, modify the `runs` CREATE TABLE to add after `created_at`:
 
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS runs (
 
 ### 1.3 Add `forks` table to SQLite schema
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/db.py`
+**File:** `src/hive/server/db.py`
 
 In `_SQLITE_SCHEMA` string, append after the `votes` table:
 
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS forks (
 
 ### 1.4 Add `fork_id` column to `runs` table in SQLite schema
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/db.py`
+**File:** `src/hive/server/db.py`
 
 Modify the `runs` CREATE TABLE in `_SQLITE_SCHEMA` to add `fork_id INTEGER REFERENCES forks(id)` after `created_at TEXT NOT NULL`.
 
@@ -84,7 +84,7 @@ Modify the `runs` CREATE TABLE in `_SQLITE_SCHEMA` to add `fork_id INTEGER REFER
 
 ### 2.1 Create `github.py` module with `GitHubApp` class
 
-**File (new):** `/Users/tianhaowu/something_cool/src/hive/server/github.py`
+**File (new):** `src/hive/server/github.py`
 
 Create a new file with the following class:
 
@@ -163,7 +163,7 @@ class GitHubApp:
 
 ### 2.2 Add `get_github_app()` helper function in `github.py`
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/github.py`
+**File:** `src/hive/server/github.py`
 
 Below the class, add:
 
@@ -200,7 +200,7 @@ def set_github_app(app: GitHubApp) -> None:
 
 ### 3.1 Add `POST /tasks/{task_id}/clone` endpoint
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/main.py`
+**File:** `src/hive/server/main.py`
 
 Add import at top:
 
@@ -241,7 +241,7 @@ def clone_task(task_id: str, token: str = Query(...)):
 
 ### 3.2 Modify `POST /tasks/{task_id}/submit` to auto-fill `fork_id`
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/main.py`
+**File:** `src/hive/server/main.py`
 
 In the `submit_run` function, after the existing validation (around line 130, before the INSERT INTO runs):
 
@@ -276,7 +276,7 @@ run = {..., "fork_id": fork_id}
 
 ### 3.3 Modify `GET /tasks/{task_id}/runs/{sha}` to include `fork_url`
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/main.py`
+**File:** `src/hive/server/main.py`
 
 In the `get_run` function (line 224-245):
 
@@ -317,7 +317,7 @@ result["repo_url"] = task["repo_url"] if task else None
 
 ### 3.4 Modify `GET /tasks/{task_id}/runs` (list_runs) to include fork_url in best_runs view
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/main.py`
+**File:** `src/hive/server/main.py`
 
 In the `list_runs` function, in the default `best_runs` branch (lines 211-221):
 
@@ -353,7 +353,7 @@ where += " AND r.agent_id = %s"
 
 ### 3.5 Modify `GET /tasks/{task_id}/context` leaderboard query to include fork_url
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/main.py`
+**File:** `src/hive/server/main.py`
 
 In `get_context` (line 385-388):
 
@@ -376,7 +376,7 @@ leaderboard = conn.execute(
 
 ### 3.6 Add `GET /tasks/{task_id}/graph` endpoint
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/server/main.py`
+**File:** `src/hive/server/main.py`
 
 Add new endpoint after `get_context`:
 
@@ -405,7 +405,7 @@ def get_graph(task_id: str):
 
 ### 4.1 Rewrite `hive task clone` command
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/cli/hive.py`
+**File:** `src/hive/cli/hive.py`
 
 Replace the current `task_clone` function (lines 232-248) entirely.
 
@@ -477,7 +477,7 @@ Also add `import os` to the imports at the top of hive.py if not already present
 
 ### 4.2 Update `print_clone_instructions` -- remove collab.md, remove branch checkout
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/cli/components/tasks.py`
+**File:** `src/hive/cli/components/tasks.py`
 
 Replace the `print_clone_instructions` function (lines 35-57).
 
@@ -518,7 +518,7 @@ def print_clone_instructions(task_id: str, agent_id: str):
 
 ### 4.3 Update `print_run_detail` to show fork_url and fork-aware git commands
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/cli/components/runs.py`
+**File:** `src/hive/cli/components/runs.py`
 
 Replace `print_run_detail` function (lines 101-120).
 
@@ -544,7 +544,7 @@ Replace `print_run_detail` function (lines 101-120).
 
 ### 4.4 Update `print_leaderboard` to show fork URL column
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/cli/components/runs.py`
+**File:** `src/hive/cli/components/runs.py`
 
 In `print_leaderboard` function (lines 9-31):
 
@@ -561,7 +561,7 @@ In `print_leaderboard` function (lines 9-31):
 
 ### 4.5 Update `hive --help` text for fork workflow
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/cli/hive.py`
+**File:** `src/hive/cli/hive.py`
 
 In the `hive` group docstring (lines 39-135):
 
@@ -602,7 +602,7 @@ In the `hive` group docstring (lines 39-135):
 
 ### 4.6 Update `task` group docstring -- remove collab.md reference
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/cli/hive.py`
+**File:** `src/hive/cli/hive.py`
 
 In the `task` group docstring (lines 182-199):
 
@@ -610,7 +610,7 @@ Remove the line: `collab.md          -- how to coordinate with other agents via 
 
 ### 4.7 Update `print_context` leaderboard header/display for fork info
 
-**File:** `/Users/tianhaowu/something_cool/src/hive/cli/components/tasks.py`
+**File:** `src/hive/cli/components/tasks.py`
 
 No changes needed here beyond what `print_leaderboard` already handles (task 4.4). The `print_context` function calls `print_leaderboard` which will already show the fork column.
 
@@ -620,7 +620,7 @@ No changes needed here beyond what `print_leaderboard` already handles (task 4.4
 
 ### 5.1 Create mock GitHubApp for tests
 
-**File (new):** `/Users/tianhaowu/something_cool/tests/mocks.py`
+**File (new):** `tests/mocks.py`
 
 ```python
 class MockGitHubApp:
@@ -653,7 +653,7 @@ class MockGitHubApp:
 
 ### 5.2 Add conftest fixture to inject MockGitHubApp
 
-**File:** `/Users/tianhaowu/something_cool/tests/conftest.py`
+**File:** `tests/conftest.py`
 
 Add import and fixture:
 
@@ -687,7 +687,7 @@ def mock_github(client):
 
 ### 5.3 Add tests for `POST /tasks/{task_id}/clone`
 
-**File:** `/Users/tianhaowu/something_cool/tests/server/test_main.py`
+**File:** `tests/server/test_main.py`
 
 Add new test class after `TestGetRun`:
 
@@ -729,7 +729,7 @@ Already covered in task 5.2 above. Ensure it is available. The `_seed_task` fixt
 
 ### 5.5 Add tests for fork_id on submit
 
-**File:** `/Users/tianhaowu/something_cool/tests/server/test_main.py`
+**File:** `tests/server/test_main.py`
 
 Add to the existing `TestSubmitRun` class:
 
@@ -760,7 +760,7 @@ def test_submit_without_fork_has_null_fork_id(self, registered_agent, _seed_task
 
 ### 5.6 Add tests for fork_url in get_run response
 
-**File:** `/Users/tianhaowu/something_cool/tests/server/test_main.py`
+**File:** `tests/server/test_main.py`
 
 Add to existing `TestGetRun` class:
 
@@ -787,7 +787,7 @@ def test_get_run_falls_back_to_repo_url(self, registered_agent, _seed_task):
 
 ### 5.7 Add tests for `GET /tasks/{task_id}/graph`
 
-**File:** `/Users/tianhaowu/something_cool/tests/server/test_main.py`
+**File:** `tests/server/test_main.py`
 
 Add new test class:
 
@@ -821,7 +821,7 @@ class TestGraph:
 
 ### 5.8 Add CLI test for `hive task clone` with fork
 
-**File:** `/Users/tianhaowu/something_cool/tests/cli/test_hive.py`
+**File:** `tests/cli/test_hive.py`
 
 This is harder to test because `task_clone` actually calls `git clone` with an SSH URL. For CLI tests against a live server, the mock GitHubApp returns fake URLs that won't actually resolve. Two options:
 
@@ -868,8 +868,8 @@ Already handled in tasks 4.5 and 4.6 above. Double-check these files for any rem
 
 **Files to grep for "collab.md" and remove/update:**
 
-- `/Users/tianhaowu/something_cool/src/hive/cli/hive.py` -- task group docstring (line 188)
-- `/Users/tianhaowu/something_cool/src/hive/cli/components/tasks.py` -- print_clone_instructions (line 45)
+- `src/hive/cli/hive.py` -- task group docstring (line 188)
+- `src/hive/cli/components/tasks.py` -- print_clone_instructions (line 45)
 
 Both are addressed in tasks 4.5 and 4.2.
 
@@ -877,11 +877,11 @@ Both are addressed in tasks 4.5 and 4.2.
 
 After all changes, verify:
 
-- `/Users/tianhaowu/something_cool/src/hive/server/main.py` has `from .github import get_github_app`
-- `/Users/tianhaowu/something_cool/src/hive/server/github.py` exists and has `GitHubApp`, `get_github_app`, `set_github_app`
-- `/Users/tianhaowu/something_cool/src/hive/cli/hive.py` has `import os` and `import json` (json is used in fork.json write)
-- `/Users/tianhaowu/something_cool/tests/conftest.py` has `from tests.mocks import MockGitHubApp` and `from hive.server.github import set_github_app`
-- `/Users/tianhaowu/something_cool/tests/mocks.py` exists
+- `src/hive/server/main.py` has `from .github import get_github_app`
+- `src/hive/server/github.py` exists and has `GitHubApp`, `get_github_app`, `set_github_app`
+- `src/hive/cli/hive.py` has `import os` and `import json` (json is used in fork.json write)
+- `tests/conftest.py` has `from tests.mocks import MockGitHubApp` and `from hive.server.github import set_github_app`
+- `tests/mocks.py` exists
 
 ### 6.3 Run test suite
 

@@ -2,6 +2,7 @@ import os
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 import httpx
 
@@ -23,7 +24,8 @@ class GitHubApp:
         self._cached_token = ""
         self._token_expires = 0
 
-    def _get_token(self) -> str:
+    def get_token(self) -> str:
+        """Return a valid GitHub App installation token (cached, auto-refreshed)."""
         # Use env var if set (for testing / manual override)
         env_token = os.environ.get("GITHUB_APP_INSTALLATION_TOKEN")
         if env_token:
@@ -46,19 +48,23 @@ class GitHubApp:
         self._token_expires = now + 3500  # ~58 min cache
         return self._cached_token
 
-    def _headers(self) -> dict:
+    def headers(self) -> dict:
         return {
-            "Authorization": f"Bearer {self._get_token()}",
+            "Authorization": f"Bearer {self.get_token()}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+
+    def clone_url(self, repo_name: str) -> str:
+        """Return an HTTPS clone URL with a fresh installation token."""
+        return f"https://x-access-token:{self.get_token()}@github.com/{self.org}/{repo_name}.git"
 
     def create_fork(self, upstream_repo: str, fork_name: str) -> dict:
         """Create a fork of upstream_repo under self.org with the given name."""
         # Check if fork already exists
         existing = httpx.get(
             f"{_GITHUB_API}/repos/{self.org}/{fork_name}",
-            headers=self._headers(), timeout=15,
+            headers=self.headers(), timeout=15,
         )
         if existing.status_code == 200:
             data = existing.json()
@@ -66,7 +72,7 @@ class GitHubApp:
 
         resp = httpx.post(
             f"{_GITHUB_API}/repos/{upstream_repo}/forks",
-            headers=self._headers(),
+            headers=self.headers(),
             json={"organization": self.org, "name": fork_name},
             timeout=30,
         )
@@ -77,7 +83,7 @@ class GitHubApp:
             time.sleep(2)
             check = httpx.get(
                 f"{_GITHUB_API}/repos/{self.org}/{fork_name}",
-                headers=self._headers(), timeout=15,
+                headers=self.headers(), timeout=15,
             )
             if check.status_code == 200:
                 data = check.json()
@@ -89,7 +95,7 @@ class GitHubApp:
         """Add a deploy key with write access to a repo. Returns key ID."""
         resp = httpx.post(
             f"{_GITHUB_API}/repos/{repo_full_name}/keys",
-            headers=self._headers(),
+            headers=self.headers(),
             json={"title": title, "key": public_key, "read_only": False},
             timeout=15,
         )
@@ -100,7 +106,7 @@ class GitHubApp:
         """Remove a deploy key from a repo."""
         resp = httpx.delete(
             f"{_GITHUB_API}/repos/{repo_full_name}/keys/{key_id}",
-            headers=self._headers(),
+            headers=self.headers(),
             timeout=15,
         )
         resp.raise_for_status()
@@ -109,7 +115,7 @@ class GitHubApp:
         """Set branch protection: no force-push, no deletion."""
         resp = httpx.put(
             f"{_GITHUB_API}/repos/{repo_full_name}/branches/{branch}/protection",
-            headers=self._headers(),
+            headers=self.headers(),
             json={
                 "required_status_checks": None,
                 "enforce_admins": False,
@@ -128,18 +134,18 @@ class GitHubApp:
         # Create repo (or get existing)
         existing = httpx.get(
             f"{_GITHUB_API}/repos/{self.org}/{repo_name}",
-            headers=self._headers(), timeout=15,
+            headers=self.headers(), timeout=15,
         )
         if existing.status_code != 200:
             resp = httpx.post(
                 f"{_GITHUB_API}/orgs/{self.org}/repos",
-                headers=self._headers(),
+                headers=self.headers(),
                 json={"name": repo_name, "description": description},
                 timeout=30,
             )
             resp.raise_for_status()
 
-        token = self._get_token()
+        token = self.get_token()
         push_url = f"https://x-access-token:{token}@github.com/{self.org}/{repo_name}.git"
         with tempfile.TemporaryDirectory() as tmpdir:
             import tarfile, io
@@ -167,8 +173,8 @@ class GitHubApp:
                 ["ssh-keygen", "-t", "ed25519", "-N", "", "-f", key_path],
                 check=True, capture_output=True,
             )
-            private_key = open(key_path).read()
-            public_key = open(key_path + ".pub").read().strip()
+            private_key = Path(key_path).read_text()
+            public_key = Path(key_path + ".pub").read_text().strip()
         return private_key, public_key
 
 
@@ -183,7 +189,7 @@ def get_github_app() -> GitHubApp:
         pk = os.environ.get("GITHUB_APP_PRIVATE_KEY", "")
         pk_file = os.environ.get("GITHUB_APP_PRIVATE_KEY_FILE", "")
         if not pk and pk_file and os.path.isfile(pk_file):
-            pk = open(pk_file).read()
+            pk = Path(pk_file).read_text()
         org = os.environ.get("GITHUB_ORG", "hive-agents")
         inst_id = os.environ.get("GITHUB_APP_INSTALLATION_ID", "")
         _github_app = GitHubApp(app_id, pk, org, inst_id)
