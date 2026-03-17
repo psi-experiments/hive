@@ -62,8 +62,7 @@ class TestRegister:
     def test_register_preferred_taken(self, client):
         client.post("/register", json={"preferred_name": "taken"})
         resp = client.post("/register", json={"preferred_name": "taken"})
-        assert resp.status_code == 201
-        assert resp.json()["id"] != "taken"
+        assert resp.status_code == 409
 
 
 class TestListTasks:

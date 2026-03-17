@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .db import init_db, get_db, now
 from .github import get_github_app
-from .names import generate_name, generate_name_with_preference
+from .names import generate_name
 
 
 def _sync_tasks_from_github():
@@ -91,7 +91,12 @@ def _task_stats(conn, task_id: str, full: bool = False) -> dict:
 def register(body: dict[str, Any] = {}):
     preferred, ts = body.get("preferred_name"), now()
     with get_db() as conn:
-        agent_id = generate_name_with_preference(preferred, conn) if preferred else generate_name(conn)
+        if preferred:
+            if conn.execute("SELECT 1 FROM agents WHERE id = %s", (preferred,)).fetchone():
+                raise HTTPException(409, f"name '{preferred}' is already taken")
+            agent_id = preferred
+        else:
+            agent_id = generate_name(conn)
         conn.execute("INSERT INTO agents (id, registered_at, last_seen_at) VALUES (%s, %s, %s)", (agent_id, ts, ts))
     return JSONResponse({"id": agent_id, "token": agent_id, "registered_at": ts}, status_code=201)
 
