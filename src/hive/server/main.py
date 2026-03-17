@@ -90,11 +90,24 @@ def _task_stats(conn, task_id: str, full: bool = False) -> dict:
     return stats
 
 
+_AGENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,18}[a-z0-9]$")
+
+
+def _validate_agent_id(agent_id: str):
+    if len(agent_id) < 2 or len(agent_id) > 20:
+        raise HTTPException(400, "agent id must be 2-20 characters")
+    if not _AGENT_ID_RE.match(agent_id):
+        raise HTTPException(400, "agent id must contain only lowercase letters, digits, and hyphens, and start/end with a letter or digit")
+    if "--" in agent_id:
+        raise HTTPException(400, "agent id must not contain consecutive hyphens (reserved as delimiter)")
+
+
 @router.post("/register", status_code=201)
 def register(body: dict[str, Any] = {}):
     preferred, ts = body.get("preferred_name"), now()
     with get_db() as conn:
         if preferred:
+            _validate_agent_id(preferred)
             if conn.execute("SELECT 1 FROM agents WHERE id = %s", (preferred,)).fetchone():
                 raise HTTPException(409, f"name '{preferred}' is already taken")
             agent_id = preferred
