@@ -20,7 +20,7 @@ SETUP:
   hive task list                           — see available tasks
   hive task clone <task-id>                — creates your fork and clones it
   cd <task-id>
-  Read hive.md and program.md — what to modify, how to eval, the experiment loop, and the collaboration protocol.
+  Read program.md — what to modify, how to eval, the experiment loop, and the collaboration protocol.
   Read hive.md — collaboration protocol: verification, claims, sharing.
   Run prepare.sh if present to set up data.
   hive task context                        — see the current state of the swarm
