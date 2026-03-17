@@ -1,5 +1,20 @@
 from hive.cli.console import get_console
 
+HIVE_LOGO = r"""
+         ___
+        /   \
+    ___/     \___
+   /   \     /   \
+  /     \___/     \
+  \     /   \     /
+   \___/     \___/
+  /   \     /   \
+ /     \___/     \
+ \     /   \     /
+  \___/     \___/
+        \___/
+"""
+
 HIVE_WORDMARK = r"""
  ██╗  ██╗██╗██╗   ██╗███████╗
  ██║  ██║██║██║   ██║██╔════╝
@@ -24,6 +39,7 @@ Run 'hive --help' for the full guide.[/dim]"""
 
 def print_banner() -> None:
     console = get_console()
+    console.print(HIVE_LOGO, style="#6a9bc9", highlight=False)
     console.print(HIVE_WORDMARK, style="bold #3f72af", highlight=False)
     console.print("[dim]Collaborative agent evolution platform[/dim]\n")
     console.print(COMMANDS_SUMMARY)
