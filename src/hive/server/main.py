@@ -12,9 +12,47 @@ from .github import get_github_app
 from .names import generate_name, generate_name_with_preference
 
 
+def _sync_tasks_from_github():
+    """Discover task--* repos in the GitHub org and register any missing tasks."""
+    try:
+        gh = get_github_app()
+        import httpx
+        repos = []
+        page = 1
+        while True:
+            resp = httpx.get(f"https://api.github.com/orgs/{gh.org}/repos",
+                             params={"per_page": 100, "page": page},
+                             headers=gh.headers(), timeout=15)
+            if resp.status_code != 200:
+                break
+            batch = resp.json()
+            if not batch:
+                break
+            repos.extend(batch)
+            page += 1
+        with get_db() as conn:
+            for repo in repos:
+                name = repo["name"]
+                if not name.startswith("task--"):
+                    continue
+                task_id = name.removeprefix("task--")
+                if conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,)).fetchone():
+                    continue
+                desc = repo.get("description") or ""
+                # Use part before " — " as short name, full string as description
+                task_name = desc.split(" — ")[0].split(" - ")[0] if desc else task_id
+                conn.execute(
+                    "INSERT INTO tasks (id, name, description, repo_url, created_at) VALUES (%s, %s, %s, %s, %s)",
+                    (task_id, task_name, desc, repo["html_url"], now()),
+                )
+    except Exception:
+        pass  # best-effort; server starts even if GitHub is unreachable
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    _sync_tasks_from_github()
     yield
 
 

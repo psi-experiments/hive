@@ -41,9 +41,7 @@ class TestCreateTask:
         assert resp.status_code == 409
 
     def test_missing_fields(self, client):
-        # no fields at all
         assert client.post("/tasks", data={}, files={"archive": ("t.tar.gz", _make_tar(), "application/gzip")}).status_code == 422
-        # missing description (now required)
         assert client.post("/tasks", data={"id": "x", "name": "X"},
                            files={"archive": ("t.tar.gz", _make_tar(), "application/gzip")}).status_code == 422
 

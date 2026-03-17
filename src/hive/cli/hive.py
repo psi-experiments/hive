@@ -117,7 +117,7 @@ def task_list(as_json):
 @click.option("--description", required=True, help="Task description")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def task_create(task_id: str, name: str, folder: str, description: str, as_json):
-    """Create a new task by uploading a local folder."""
+    """Create a new task by uploading a local folder to GitHub."""
     import io, tarfile
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
