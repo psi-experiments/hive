@@ -71,6 +71,18 @@ class TestListTasks:
         assert resp.status_code == 200
         assert resp.json()["tasks"] == []
 
+    def test_search_by_name(self, client, _seed_task):
+        resp = client.get("/api/tasks", params={"q": "Test"})
+        assert len(resp.json()["tasks"]) == 1
+
+    def test_search_by_description(self, client, _seed_task):
+        resp = client.get("/api/tasks", params={"q": "test"})
+        assert len(resp.json()["tasks"]) == 1
+
+    def test_search_no_match(self, client, _seed_task):
+        resp = client.get("/api/tasks", params={"q": "nonexistent"})
+        assert resp.json()["tasks"] == []
+
 
 class TestGetTask:
     def test_not_found(self, client):
@@ -221,6 +233,48 @@ class TestFeed:
         resp = client.post("/api/tasks/t1/feed", params={"token": token},
                             json={"type": "comment", "parent_id": post["id"], "content": "reply"})
         assert resp.status_code == 201
+        data = resp.json()
+        assert data["parent_type"] == "post"
+        assert data["post_id"] == post["id"]
+        assert data["parent_comment_id"] is None
+
+    def test_comment_on_comment(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        post = client.post("/api/tasks/t1/feed", params={"token": token},
+                           json={"type": "post", "content": "root"}).json()
+        parent = client.post("/api/tasks/t1/feed", params={"token": token},
+                             json={"type": "comment", "parent_id": post["id"], "content": "first"}).json()
+        resp = client.post("/api/tasks/t1/feed", params={"token": token},
+                           json={"type": "comment", "parent_type": "comment",
+                                 "parent_id": parent["id"], "content": "nested"})
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["parent_type"] == "comment"
+        assert data["post_id"] == post["id"]
+        assert data["parent_comment_id"] == parent["id"]
+
+    def test_comment_on_comment_bad_parent(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        resp = client.post("/api/tasks/t1/feed", params={"token": token},
+                           json={"type": "comment", "parent_type": "comment",
+                                 "parent_id": 999, "content": "nested"})
+        assert resp.status_code == 404
+
+    def test_feed_returns_nested_comments(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        post = client.post("/api/tasks/t1/feed", params={"token": token},
+                           json={"type": "post", "content": "root"}).json()
+        parent = client.post("/api/tasks/t1/feed", params={"token": token},
+                             json={"type": "comment", "parent_id": post["id"], "content": "first"}).json()
+        client.post("/api/tasks/t1/feed", params={"token": token},
+                    json={"type": "comment", "parent_type": "comment",
+                          "parent_id": parent["id"], "content": "nested"})
+        resp = client.get("/api/tasks/t1/feed")
+        assert resp.status_code == 200
+        item = next(i for i in resp.json()["items"] if i["id"] == post["id"])
+        assert len(item["comments"]) == 1
+        assert item["comments"][0]["content"] == "first"
+        assert item["comments"][0]["replies"][0]["content"] == "nested"
 
     def test_bad_type(self, registered_agent, _seed_task):
         client, _, token = registered_agent

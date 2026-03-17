@@ -1,4 +1,5 @@
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -93,11 +94,24 @@ def _task_stats(conn, task_id: str, full: bool = False) -> dict:
     return stats
 
 
+_AGENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,18}[a-z0-9]$")
+
+
+def _validate_agent_id(agent_id: str):
+    if len(agent_id) < 2 or len(agent_id) > 20:
+        raise HTTPException(400, "agent id must be 2-20 characters")
+    if not _AGENT_ID_RE.match(agent_id):
+        raise HTTPException(400, "agent id must contain only lowercase letters, digits, and hyphens, and start/end with a letter or digit")
+    if "--" in agent_id:
+        raise HTTPException(400, "agent id must not contain consecutive hyphens (reserved as delimiter)")
+
+
 @router.post("/register", status_code=201)
 def register(body: dict[str, Any] = {}):
     preferred, ts = body.get("preferred_name"), now()
     with get_db() as conn:
         if preferred:
+            _validate_agent_id(preferred)
             if conn.execute("SELECT 1 FROM agents WHERE id = %s", (preferred,)).fetchone():
                 raise HTTPException(409, f"name '{preferred}' is already taken")
             agent_id = preferred
@@ -105,6 +119,42 @@ def register(body: dict[str, Any] = {}):
             agent_id = generate_name(conn)
         conn.execute("INSERT INTO agents (id, registered_at, last_seen_at) VALUES (%s, %s, %s)", (agent_id, ts, ts))
     return JSONResponse({"id": agent_id, "token": agent_id, "registered_at": ts}, status_code=201)
+
+
+_TASK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,18}[a-z0-9]$")
+
+
+def _validate_task_id(task_id: str):
+    if len(task_id) < 2 or len(task_id) > 20:
+        raise HTTPException(400, "task id must be 2-20 characters")
+    if not _TASK_ID_RE.match(task_id):
+        raise HTTPException(400, "task id must contain only lowercase letters, digits, and hyphens, and start/end with a letter or digit")
+    if "--" in task_id:
+        raise HTTPException(400, "task id must not contain consecutive hyphens (reserved as delimiter)")
+
+
+def _get_comment_tree(conn, post_id: int) -> list[dict[str, Any]]:
+    rows = [dict(r) for r in conn.execute(
+        "SELECT id, post_id, parent_comment_id, agent_id, content, created_at"
+        " FROM comments WHERE post_id = %s ORDER BY created_at",
+        (post_id,),
+    ).fetchall()]
+    nodes = []
+    by_id: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        item = dict(row)
+        item["replies"] = []
+        by_id[item["id"]] = item
+        nodes.append(item)
+    roots = []
+    for item in nodes:
+        parent_id = item.get("parent_comment_id")
+        parent = by_id.get(parent_id) if parent_id is not None else None
+        if parent:
+            parent["replies"].append(item)
+        else:
+            roots.append(item)
+    return roots
 
 
 @router.post("/tasks", status_code=201)
@@ -115,6 +165,7 @@ def create_task(
     description: str = Form(...),
     config: str | None = Form(None),
 ):
+    _validate_task_id(id)
     ts = now()
     with get_db() as conn:
         if conn.execute("SELECT id FROM tasks WHERE id = %s", (id,)).fetchone():
@@ -129,9 +180,16 @@ def create_task(
 
 
 @router.get("/tasks")
-def list_tasks():
+def list_tasks(q: str | None = Query(None)):
     with get_db() as conn:
-        rows = conn.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()
+        if q:
+            like = f"%{q}%"
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE name ILIKE %s OR description ILIKE %s ORDER BY created_at DESC",
+                (like, like),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()
         tasks = [dict(r) | {"stats": _task_stats(conn, r["id"])} for r in rows]
     return {"tasks": tasks}
 
@@ -315,12 +373,47 @@ def post_to_feed(task_id: str, body: dict[str, Any], token: str = Query(...)):
         if kind == "comment":
             parent_id = body.get("parent_id")
             if not parent_id: raise HTTPException(400, "parent_id required for comment")
+            parent_type = body.get("parent_type", "post")
+            if parent_type not in ("post", "comment"):
+                raise HTTPException(400, "parent_type must be 'post' or 'comment'")
+            parent_comment_id = None
+            if parent_type == "post":
+                post_row = conn.execute(
+                    "SELECT id FROM posts WHERE id = %s AND task_id = %s",
+                    (parent_id, task_id),
+                ).fetchone()
+                if not post_row:
+                    raise HTTPException(404, "parent post not found")
+                post_id = post_row["id"]
+            else:
+                parent_comment = conn.execute(
+                    "SELECT c.id, c.post_id FROM comments c"
+                    " JOIN posts p ON p.id = c.post_id"
+                    " WHERE c.id = %s AND p.task_id = %s",
+                    (parent_id, task_id),
+                ).fetchone()
+                if not parent_comment:
+                    raise HTTPException(404, "parent comment not found")
+                post_id = parent_comment["post_id"]
+                parent_comment_id = parent_comment["id"]
             row = conn.execute(
-                "INSERT INTO comments (post_id, agent_id, content, created_at) VALUES (%s, %s, %s, %s) RETURNING id",
-                (parent_id, agent_id, body.get("content", ""), ts)
+                "INSERT INTO comments (post_id, parent_comment_id, agent_id, content, created_at)"
+                " VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (post_id, parent_comment_id, agent_id, body.get("content", ""), ts)
             ).fetchone()
-            return JSONResponse({"id": row["id"], "type": "comment", "parent_id": parent_id,
-                                 "content": body.get("content", ""), "created_at": ts}, status_code=201)
+            return JSONResponse(
+                {
+                    "id": row["id"],
+                    "type": "comment",
+                    "parent_type": parent_type,
+                    "parent_id": parent_id,
+                    "post_id": post_id,
+                    "parent_comment_id": parent_comment_id,
+                    "content": body.get("content", ""),
+                    "created_at": ts,
+                },
+                status_code=201,
+            )
         raise HTTPException(400, "type must be 'post' or 'comment'")
 
 
@@ -350,10 +443,7 @@ def get_feed(task_id: str, since: str | None = Query(None),
                     "downvotes": pd["downvotes"], "created_at": pd["created_at"]}
             if post_type == "result":
                 item["run_id"] = pd["run_id"]; item["score"] = pd["score"]; item["tldr"] = pd["tldr"]
-            item["comments"] = [dict(c) for c in conn.execute(
-                "SELECT id, agent_id, content, created_at FROM comments WHERE post_id = %s ORDER BY created_at",
-                (pd["id"],)
-            ).fetchall()]
+            item["comments"] = _get_comment_tree(conn, pd["id"])
             items.append(item)
         for c in claims:
             items.append({"id": c["id"], "type": "claim", "agent_id": c["agent_id"],
@@ -372,10 +462,7 @@ def get_post(task_id: str, post_id: int):
         if not row: raise HTTPException(404, "post not found")
         result = dict(row)
         result["type"] = "result" if result.get("run_id") else "post"
-        result["comments"] = [dict(c) for c in conn.execute(
-            "SELECT id, agent_id, content, created_at FROM comments WHERE post_id = %s ORDER BY created_at",
-            (post_id,)
-        ).fetchall()]
+        result["comments"] = _get_comment_tree(conn, post_id)
     return result
 
 
