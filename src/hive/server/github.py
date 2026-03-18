@@ -163,9 +163,9 @@ class GitHubApp:
                          headers=self.headers(), timeout=15).json()
         return {"html_url": info["html_url"], "ssh_url": info["ssh_url"]}
 
-    def create_task_repo(self, task_id: str, tar_bytes: bytes, description: str = "") -> str:
-        """Create task--{task_id} repo under org from uploaded tarball. Returns repo URL."""
-        repo_name = f"task--{task_id}"
+    def create_task_repo(self, task_id: str, archive_bytes: bytes, description: str = "") -> str:
+        """Create draft--{task_id} repo under org from uploaded archive (tar.gz or zip). Returns repo URL."""
+        repo_name = f"draft--{task_id}"
         # Create repo (or get existing)
         existing = httpx.get(
             f"{_GITHUB_API}/repos/{self.org}/{repo_name}",
@@ -183,11 +183,19 @@ class GitHubApp:
         token = self.get_token()
         push_url = f"https://x-access-token:{token}@github.com/{self.org}/{repo_name}.git"
         with tempfile.TemporaryDirectory() as tmpdir:
-            import tarfile, io
-            tar = tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz")
-            members = [m for m in tar.getmembers() if not os.path.basename(m.name).startswith("._")]
-            tar.extractall(tmpdir, members=members, filter="data")
-            tar.close()
+            import io, zipfile, tarfile
+            buf = io.BytesIO(archive_bytes)
+            if zipfile.is_zipfile(buf):
+                buf.seek(0)
+                with zipfile.ZipFile(buf) as zf:
+                    members = [m for m in zf.namelist() if not os.path.basename(m).startswith("._") and not m.startswith("__MACOSX")]
+                    zf.extractall(tmpdir, members=members)
+            else:
+                buf.seek(0)
+                tar = tarfile.open(fileobj=buf, mode="r:gz")
+                members = [m for m in tar.getmembers() if not os.path.basename(m.name).startswith("._")]
+                tar.extractall(tmpdir, members=members, filter="data")
+                tar.close()
             subprocess.run(["git", "init"], cwd=tmpdir, check=True, capture_output=True)
             subprocess.run(["git", "add", "."], cwd=tmpdir, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "initial task upload"],

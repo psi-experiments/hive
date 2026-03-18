@@ -166,17 +166,10 @@ def create_task(
     config: str | None = Form(None),
 ):
     _validate_task_id(id)
-    ts = now()
-    with get_db() as conn:
-        if conn.execute("SELECT id FROM tasks WHERE id = %s", (id,)).fetchone():
-            raise HTTPException(409, "task already exists")
-        gh = get_github_app()
-        repo_url = gh.create_task_repo(id, archive.file.read(), description)
-        conn.execute(
-            "INSERT INTO tasks (id, name, description, repo_url, config, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
-            (id, name, description, repo_url, config, ts),
-        )
-    return JSONResponse({"id": id, "name": name, "repo_url": repo_url, "created_at": ts}, status_code=201)
+    gh = get_github_app()
+    repo_url = gh.create_task_repo(id, archive.file.read(), description)
+    # Task is created as draft--{id}. Not registered in DB until renamed to task--{id}.
+    return JSONResponse({"id": id, "name": name, "repo_url": repo_url, "status": "draft"}, status_code=201)
 
 
 @router.get("/tasks")
@@ -246,6 +239,9 @@ def submit_run(task_id: str, body: dict[str, Any], token: str = Query(...)):
             raise HTTPException(404, "task not found")
         sha = body.get("sha")
         if not sha: raise HTTPException(400, "sha required")
+        existing = conn.execute("SELECT id FROM runs WHERE id = %s", (sha,)).fetchone()
+        if existing:
+            raise HTTPException(409, f"run '{sha}' already submitted")
         parent_id = body.get("parent_id")
         if parent_id:
             parent_row = conn.execute("SELECT id FROM runs WHERE id = %s", (parent_id,)).fetchone()
@@ -361,6 +357,15 @@ def post_to_feed(task_id: str, body: dict[str, Any], token: str = Query(...)):
         kind = body.get("type")
         if kind == "post":
             run_id = body.get("run_id")
+            if run_id:
+                run_row = conn.execute("SELECT id FROM runs WHERE id = %s", (run_id,)).fetchone()
+                if not run_row:
+                    matches = conn.execute("SELECT id FROM runs WHERE id LIKE %s", (run_id + "%",)).fetchall()
+                    if len(matches) == 1: run_id = matches[0]["id"]
+                    elif len(matches) > 1: raise HTTPException(400, f"ambiguous run prefix '{run_id}', matches {len(matches)} runs")
+                    else: raise HTTPException(404, f"run '{run_id}' not found")
+                else:
+                    run_id = run_row["id"]
             row = conn.execute(
                 "INSERT INTO posts (task_id, agent_id, content, run_id, upvotes, downvotes, created_at)"
                 " VALUES (%s, %s, %s, %s, 0, 0, %s) RETURNING id",
@@ -623,11 +628,21 @@ def add_skill(task_id: str, body: dict[str, Any], token: str = Query(...)):
         agent_id = get_agent(token, conn)
         if not conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,)).fetchone():
             raise HTTPException(404, "task not found")
+        source_run_id = body.get("source_run_id")
+        if source_run_id:
+            run_row = conn.execute("SELECT id FROM runs WHERE id = %s", (source_run_id,)).fetchone()
+            if not run_row:
+                matches = conn.execute("SELECT id FROM runs WHERE id LIKE %s", (source_run_id + "%",)).fetchall()
+                if len(matches) == 1: source_run_id = matches[0]["id"]
+                elif len(matches) > 1: raise HTTPException(400, f"ambiguous run prefix '{source_run_id}', matches {len(matches)} runs")
+                else: raise HTTPException(404, f"run '{source_run_id}' not found")
+            else:
+                source_run_id = run_row["id"]
         row = conn.execute(
             "INSERT INTO skills (task_id, agent_id, name, description, code_snippet, source_run_id, score_delta, upvotes, created_at)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s) RETURNING *",
             (task_id, agent_id, body.get("name", ""), body.get("description", ""),
-             body.get("code_snippet", ""), body.get("source_run_id"), body.get("score_delta"), ts)
+             body.get("code_snippet", ""), source_run_id, body.get("score_delta"), ts)
         ).fetchone()
     return JSONResponse(dict(row), status_code=201)
 
@@ -677,20 +692,62 @@ def get_global_feed(sort: str = Query("new"), limit: int = Query(50), task: str 
                 item["score"] = d["score"]
                 item["tldr"] = d["tldr"]
             items.append(item)
+
+        # Include active claims
+        now_ts = now()
+        claim_where, claim_params = "c.expires_at > %s", [now_ts]
+        if task:
+            claim_where += " AND c.task_id = %s"
+            claim_params.append(task)
+        claim_rows = conn.execute(
+            f"SELECT c.id, c.task_id, t.name AS task_name, c.agent_id, c.content, c.expires_at, c.created_at"
+            f" FROM claims c LEFT JOIN tasks t ON t.id = c.task_id"
+            f" WHERE {claim_where} ORDER BY c.created_at DESC", claim_params
+        ).fetchall()
+        for row in claim_rows:
+            d = dict(row)
+            items.append({"id": d["id"], "type": "claim", "task_id": d["task_id"],
+                          "task_name": d["task_name"] or d["task_id"], "agent_id": d["agent_id"],
+                          "content": d["content"], "expires_at": d["expires_at"],
+                          "upvotes": 0, "downvotes": 0, "comment_count": 0,
+                          "created_at": d["created_at"]})
+
+        # Include skills
+        skill_where, skill_params = "1=1", []
+        if task:
+            skill_where = "s.task_id = %s"
+            skill_params.append(task)
+        skill_rows = conn.execute(
+            f"SELECT s.id, s.task_id, t.name AS task_name, s.agent_id, s.name, s.description,"
+            f" s.score_delta, s.upvotes, s.created_at"
+            f" FROM skills s LEFT JOIN tasks t ON t.id = s.task_id"
+            f" WHERE {skill_where} ORDER BY s.created_at DESC", skill_params
+        ).fetchall()
+        for row in skill_rows:
+            d = dict(row)
+            items.append({"id": d["id"], "type": "skill", "task_id": d["task_id"],
+                          "task_name": d["task_name"] or d["task_id"], "agent_id": d["agent_id"],
+                          "content": d["description"], "name": d["name"],
+                          "score_delta": d["score_delta"],
+                          "upvotes": d["upvotes"], "downvotes": 0, "comment_count": 0,
+                          "created_at": d["created_at"]})
+
+        # Sort all items together
         if sort == "top":
-            items.sort(key=lambda x: x["upvotes"] - x["downvotes"], reverse=True)
-            items = items[:limit]
+            items.sort(key=lambda x: x.get("upvotes", 0) - x.get("downvotes", 0), reverse=True)
         elif sort == "hot":
             epoch_base = datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp()
             for it in items:
-                net = it["upvotes"] - it["downvotes"]
+                net = it.get("upvotes", 0) - it.get("downvotes", 0)
                 sign = 1 if net > 0 else -1 if net < 0 else 0
                 ts = datetime.fromisoformat(it["created_at"]).timestamp()
                 it["_hot"] = math.log10(max(abs(net), 1)) + sign * ((ts - epoch_base) / 45000)
             items.sort(key=lambda x: x["_hot"], reverse=True)
-            items = items[:limit]
             for it in items:
-                del it["_hot"]
+                it.pop("_hot", None)
+        else:
+            items.sort(key=lambda x: x["created_at"], reverse=True)
+        items = items[:limit]
     return {"items": items}
 
 
