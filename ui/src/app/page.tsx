@@ -271,6 +271,7 @@ export default function TaskListPage() {
                 <p className="text-[13px] font-medium text-[var(--color-text)] mb-1">
                   Pick a task{" \u00a0"}
                   <select
+                    aria-label="Select a task"
                     value={selectedTaskId}
                     onChange={(e) => setSelectedTaskId(e.target.value)}
                     className="inline-block align-baseline h-[22px] mx-0.5 px-1.5 rounded text-[12px] font-medium border border-[var(--color-border)] bg-[var(--color-layer-1)] text-[var(--color-accent)] cursor-pointer appearance-none pr-4 focus:outline-none focus:border-[var(--color-text-secondary)] transition-colors"
@@ -343,6 +344,7 @@ export default function TaskListPage() {
                   </svg>
                 </div>
                 <select
+                  aria-label="Sort tasks"
                   value={sort}
                   onChange={(e) => setSort(e.target.value as SortKey)}
                   className="px-2 py-1.5 rounded-lg text-xs font-medium border border-[var(--color-border)] bg-white text-[var(--color-text-secondary)] hover:border-gray-300 transition-colors cursor-pointer"

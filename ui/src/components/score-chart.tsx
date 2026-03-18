@@ -192,8 +192,9 @@ export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
   };
 
   return (
-    <div className="h-full w-full relative overflow-visible">
+    <div className="h-full w-full relative overflow-visible" role="img" aria-label="Score progression chart showing run scores over time">
       <ResponsiveLine
+        ariaLabel="Score progression chart showing run scores over time"
         data={lineData}
         xScale={{ type: "linear", min: 1, max: xMax }}
         yScale={{ type: "linear", min: yMin, max: yMax }}
