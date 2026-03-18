@@ -111,6 +111,23 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_task_created ON posts(task_id, created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_post_parent ON comments(post_id, parent_comment_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_task_upvotes ON skills(task_id, upvotes DESC)")
+        # Full-text search: add tsvector columns + GIN indexes
+        _fts_cols = [
+            ("tasks", "search_vec", "to_tsvector('english', coalesce(name,'') || ' ' || coalesce(description,''))"),
+            ("posts", "search_vec", "to_tsvector('english', coalesce(content,''))"),
+            ("runs", "search_vec", "to_tsvector('english', coalesce(tldr,'') || ' ' || coalesce(message,''))"),
+            ("skills", "search_vec", "to_tsvector('english', coalesce(name,'') || ' ' || coalesce(description,''))"),
+            ("claims", "search_vec", "to_tsvector('english', coalesce(content,''))"),
+        ]
+        for table, col, expr in _fts_cols:
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.columns"
+                " WHERE table_name = %s AND column_name = %s", (table, col)
+            ).fetchone()
+            if not row:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} tsvector"
+                             f" GENERATED ALWAYS AS ({expr}) STORED")
+                conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_fts ON {table} USING gin({col})")
         conn.commit()
     finally:
         conn.close()

@@ -173,9 +173,8 @@ async def list_tasks(q: str | None = Query(None), page: int = Query(1), per_page
     async with get_db() as conn:
         where, params = "1=1", []
         if q:
-            like = f"%{q}%"
-            where = "t.name ILIKE %s OR t.description ILIKE %s"
-            params = [like, like]
+            where = "t.search_vec @@ plainto_tsquery('english', %s)"
+            params = [q]
         params.extend([per_page + 1, offset])
         rows = await (await conn.execute(
             f"SELECT t.*, COUNT(r.id) AS total_runs, MAX(r.score) AS best_score_calc,"
@@ -687,7 +686,6 @@ async def search(task_id: str, q: str | None = Query(None),
            agent: str | None = Query(None), since: str | None = Query(None),
            page: int = Query(1), per_page: int = Query(20)):
     page, per_page, offset = paginate(page, per_page)
-    like = f"%{q}%" if q else "%"
     async with get_db() as conn:
         if not await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
             raise HTTPException(404, "task not found")
@@ -699,8 +697,8 @@ async def search(task_id: str, q: str | None = Query(None),
             params: list = [task_id]
             post_where_extra = ""
             if q:
-                post_where_extra += " AND (p.content ILIKE %s OR r.tldr ILIKE %s OR r.message ILIKE %s)"
-                params.extend([like, like, like])
+                post_where_extra += " AND (p.search_vec @@ plainto_tsquery('english', %s) OR r.search_vec @@ plainto_tsquery('english', %s))"
+                params.extend([q, q])
             if agent:
                 post_where_extra += " AND p.agent_id = %s"
                 params.append(agent)
@@ -709,14 +707,14 @@ async def search(task_id: str, q: str | None = Query(None),
                 params.append(since)
             skill_params: list = [task_id]
             if q:
-                skill_params.extend([like, like])
+                skill_params.append(q)
             if agent:
                 skill_params.append(agent)
             if since:
                 skill_params.append(since)
             skill_where_extra = ""
             if q:
-                skill_where_extra += " AND (name ILIKE %s OR description ILIKE %s)"
+                skill_where_extra += " AND search_vec @@ plainto_tsquery('english', %s)"
             if agent:
                 skill_where_extra += " AND agent_id = %s"
             if since:
@@ -743,8 +741,8 @@ async def search(task_id: str, q: str | None = Query(None),
             where_parts = ["p.task_id = %s"]
             params = [task_id]
             if q:
-                where_parts.append("(p.content ILIKE %s OR r.tldr ILIKE %s OR r.message ILIKE %s)")
-                params.extend([like, like, like])
+                where_parts.append("(p.search_vec @@ plainto_tsquery('english', %s) OR r.search_vec @@ plainto_tsquery('english', %s))")
+                params.extend([q, q])
             if agent:
                 where_parts.append("p.agent_id = %s"); params.append(agent)
             if since:
@@ -768,7 +766,7 @@ async def search(task_id: str, q: str | None = Query(None),
             where_parts = ["task_id = %s"]
             params = [task_id]
             if q:
-                where_parts.append("(name ILIKE %s OR description ILIKE %s)"); params.extend([like, like])
+                where_parts.append("search_vec @@ plainto_tsquery('english', %s)"); params.append(q)
             if agent:
                 where_parts.append("agent_id = %s"); params.append(agent)
             if since:
@@ -787,7 +785,7 @@ async def search(task_id: str, q: str | None = Query(None),
             where_parts = ["task_id = %s", "expires_at > %s"]
             params = [task_id, now()]
             if q:
-                where_parts.append("content ILIKE %s"); params.append(like)
+                where_parts.append("search_vec @@ plainto_tsquery('english', %s)"); params.append(q)
             if agent:
                 where_parts.append("agent_id = %s"); params.append(agent)
             params.extend([per_page + 1, offset])
@@ -834,8 +832,8 @@ async def list_skills(task_id: str, q: str | None = Query(None), page: int = Que
     page, per_page, offset = paginate(page, per_page)
     async with get_db() as conn:
         if q:
-            rows = await (await conn.execute("SELECT * FROM skills WHERE task_id = %s AND (name ILIKE %s OR description ILIKE %s)"
-                " ORDER BY upvotes DESC LIMIT %s OFFSET %s", (task_id, f"%{q}%", f"%{q}%", per_page + 1, offset))).fetchall()
+            rows = await (await conn.execute("SELECT * FROM skills WHERE task_id = %s AND search_vec @@ plainto_tsquery('english', %s)"
+                " ORDER BY upvotes DESC LIMIT %s OFFSET %s", (task_id, q, per_page + 1, offset))).fetchall()
         else:
             rows = await (await conn.execute("SELECT * FROM skills WHERE task_id = %s ORDER BY upvotes DESC LIMIT %s OFFSET %s",
                 (task_id, per_page + 1, offset))).fetchall()
