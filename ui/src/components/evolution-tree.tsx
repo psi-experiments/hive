@@ -22,6 +22,8 @@ interface GraphNode {
   isArtifact: boolean;
   inLineage: boolean;
   color: string;
+  speechBubble?: string;
+  bubbleBelow?: boolean;
   fx?: number;
   fy?: number;
 }
@@ -213,6 +215,146 @@ export function EvolutionTree({ runs, onRunClick }: EvolutionTreeProps) {
       }
     }
 
+    // Compute speech bubbles for best-lineage nodes
+    // Pick from array without repeating — tracks used messages globally
+    const used = new Set<string>();
+    const pick = (arr: string[], id: string) => {
+      // Try hash-based pick first
+      let h = 0;
+      for (let j = 0; j < id.length; j++) h = ((h << 5) - h + id.charCodeAt(j)) | 0;
+      const start = Math.abs(h) % arr.length;
+      // Walk from hash position, find first unused
+      for (let j = 0; j < arr.length; j++) {
+        const candidate = arr[(start + j) % arr.length];
+        if (!used.has(candidate)) {
+          used.add(candidate);
+          return candidate;
+        }
+      }
+      // All used — just return hash pick (very long chains)
+      return arr[start];
+    };
+
+    for (const chain of bestChains) {
+      const chainNodes = runs
+        .filter((r) => chain.has(r.id))
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+      // Pre-compute messages for all nodes, then thin out
+      const messages: { idx: number; msg: string; isKey: boolean }[] = [];
+      let bestSoFar = -Infinity;
+      for (let i = 0; i < chainNodes.length; i++) {
+        const node = nodeMap.get(chainNodes[i].id);
+        if (!node || node.run.score === null) continue;
+        const score = node.run.score;
+        const prevScore = i > 0 ? (chainNodes[i - 1].score ?? null) : null;
+        const isNewBest = score > bestSoFar;
+        const improved = prevScore !== null && score > prevScore;
+        const declined = prevScore !== null && score < prevScore;
+        const d = prevScore !== null ? Math.abs(score - prevScore) : 0;
+        const ds = d > 0 ? d.toFixed(3) : "";
+        // Key moments always get a bubble
+        const isKey = i === 0 || i === chainNodes.length - 1 || (isNewBest && improved);
+
+        let msg: string;
+        if (i === 0) {
+          msg = pick([
+            "Let's go!",
+            "Starting fresh!",
+            "First attempt!",
+            "Here we go...",
+            "Time to evolve!",
+            "Challenge accepted!",
+            "Let's see what we can do",
+            "Alright, first try!",
+          ], node.id);
+        } else if (isNewBest && improved) {
+          msg = pick([
+            "New best score!",
+            `+${ds}! New record!`,
+            "Yes!! New record!",
+            "We're onto something!",
+            `Boom! +${ds}!`,
+            "This is working!",
+            "Best so far!",
+            "I knew that would work!",
+            `+${ds} and a new best!`,
+            "That's what I'm talking about!",
+            "Nailed it!",
+            "Top of the board!",
+            "New high score!!",
+            "Breakthrough!",
+            `Up ${ds}! LFG!`,
+          ], node.id);
+        } else if (improved) {
+          msg = pick([
+            `+${ds}, getting warmer`,
+            "Small win, not done yet",
+            "Progress!",
+            "That helped a little",
+            `Up ${ds}, chipping away`,
+            "Right direction!",
+            "Inching closer...",
+            `+${ds}... almost there?`,
+            "Slow and steady",
+            "Moving the needle",
+            "Better! Keep going",
+            "Slight improvement!",
+            `+${ds}, I'll take it`,
+            "Step by step...",
+            "Getting somewhere!",
+          ], node.id);
+        } else if (declined) {
+          msg = pick([
+            "Hmm, that didn't work",
+            "Oops, score dropped",
+            "Nope, bad idea",
+            "Let me try something else",
+            `Down ${ds}... reverting`,
+            "Back to the drawing board",
+            `−${ds}, scratch that`,
+            "Okay, not that approach",
+            "Learning from mistakes!",
+            "Well, now I know",
+            "That was a dead end",
+            "Interesting failure",
+            "Wrong hypothesis",
+            `−${ds}... rethinking`,
+            "Noted, moving on",
+          ], node.id);
+        } else {
+          msg = pick([
+            "Same score... tweaking",
+            "No change, trying again",
+            "Need a new angle",
+            "Stuck, thinking...",
+            "Plateau... pivoting",
+            "Hmm, no effect",
+            "Lateral move, adjusting",
+            "Flat, need fresh ideas",
+          ], node.id);
+        }
+
+        messages.push({ idx: i, msg, isKey });
+        if (score > bestSoFar) bestSoFar = score;
+      }
+
+      // Show bubbles on: key nodes + every ~3rd non-key node (max ~8 total)
+      let bubbleCount = 0;
+      let lastBubbleIdx = -3;
+      const below = new Set<number>(); // alternate direction
+      for (const { idx, msg, isKey } of messages) {
+        const node = nodeMap.get(chainNodes[idx].id)!;
+        const show = isKey || (idx - lastBubbleIdx >= 3 && bubbleCount < 10);
+        if (show) {
+          node.speechBubble = msg;
+          node.bubbleBelow = bubbleCount % 2 === 1;
+          bubbleCount++;
+          lastBubbleIdx = idx;
+        }
+      }
+    }
+
     return { nodes: [...nodeMap.values()], links };
   }, [runs, bestLineage, bestChains]);
 
@@ -315,6 +457,77 @@ export function EvolutionTree({ runs, onRunClick }: EvolutionTreeProps) {
     ctx.fill();
     ctx.stroke();
     ctx.restore();
+
+    // Speech bubble for best-lineage nodes
+    if (gn.speechBubble) {
+      ctx.save();
+      const fontSize = 10;
+      ctx.font = `500 ${fontSize}px 'DM Sans', sans-serif`;
+      const text = gn.speechBubble;
+      const metrics = ctx.measureText(text);
+      const padX = 7;
+      const padY = 4;
+      const bubbleW = metrics.width + padX * 2;
+      const bubbleH = fontSize + padY * 2;
+      const tailH = 5;
+      const below = gn.bubbleBelow;
+      const bubbleX = x - bubbleW / 2;
+      const bubbleY = below
+        ? y + half + tailH + 2
+        : y - half - tailH - bubbleH - 2;
+      const bubbleR = 6;
+
+      // Bubble background
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#e5e7eb";
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.roundRect(bubbleX, bubbleY, bubbleW, bubbleH, bubbleR);
+      ctx.fill();
+      ctx.stroke();
+
+      // Tail triangle
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#e5e7eb";
+      if (below) {
+        // Tail points up from top of bubble to node
+        ctx.beginPath();
+        ctx.moveTo(x - 4, bubbleY);
+        ctx.lineTo(x, bubbleY - tailH);
+        ctx.lineTo(x + 4, bubbleY);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(x - 4, bubbleY);
+        ctx.lineTo(x, bubbleY - tailH);
+        ctx.lineTo(x + 4, bubbleY);
+        ctx.stroke();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(x - 3.5, bubbleY - 0.5, 7, 1.5);
+      } else {
+        // Tail points down from bottom of bubble to node
+        ctx.beginPath();
+        ctx.moveTo(x - 4, bubbleY + bubbleH);
+        ctx.lineTo(x, bubbleY + bubbleH + tailH);
+        ctx.lineTo(x + 4, bubbleY + bubbleH);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(x - 4, bubbleY + bubbleH);
+        ctx.lineTo(x, bubbleY + bubbleH + tailH);
+        ctx.lineTo(x + 4, bubbleY + bubbleH);
+        ctx.stroke();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(x - 3.5, bubbleY + bubbleH - 0.5, 7, 1.5);
+      }
+
+      // Text
+      ctx.fillStyle = "#374151";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, x, bubbleY + bubbleH / 2);
+      ctx.restore();
+    }
   }, []);
 
   // Custom link rendering on Canvas
