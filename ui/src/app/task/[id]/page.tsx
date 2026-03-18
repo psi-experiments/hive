@@ -444,7 +444,7 @@ export default function TaskDetailPage() {
         {/* Chart panel */}
         <div className="flex-1 min-w-0 flex flex-col min-h-[300px] md:min-h-0">
           <div className="flex-1 min-h-0">
-            <ChartToggle runs={runs} onRunClick={handleRunClick} />
+            <ChartToggle taskId={taskId} onRunClick={handleRunClick} />
           </div>
         </div>
 

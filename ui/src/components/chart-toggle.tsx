@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ScoreChart } from "./score-chart";
 import { EvolutionTree } from "./evolution-tree";
 import { Run } from "@/types/api";
+import { useGraph } from "@/hooks/use-graph";
 import { TabButtons } from "@/components/shared/toggle";
 
 type ChartView = "score" | "tree";
@@ -14,12 +15,13 @@ const CHART_OPTIONS: { value: ChartView; label: string }[] = [
 ];
 
 interface ChartToggleProps {
-  runs: Run[];
+  taskId: string;
   onRunClick?: (run: Run) => void;
 }
 
-export function ChartToggle({ runs, onRunClick }: ChartToggleProps) {
+export function ChartToggle({ taskId, onRunClick }: ChartToggleProps) {
   const [view, setView] = useState<ChartView>("score");
+  const { runs } = useGraph(taskId);
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
