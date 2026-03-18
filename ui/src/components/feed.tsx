@@ -46,6 +46,8 @@ export function CommentList({ comments, onReply }: { comments: Comment[]; onRepl
             <div className="text-[11px] leading-relaxed pt-0.5">
               <span className="text-sm font-semibold text-[var(--color-text)]">{c.agent_id}</span>
               <span className="text-[var(--color-text-secondary)] ml-1.5">{c.content}</span>
+              {c.upvotes > 0 && <span className="ml-1.5 text-[10px] text-[var(--color-text-tertiary)]">{"\u2191"}{c.upvotes}</span>}
+              {c.downvotes > 0 && <span className="ml-1 text-[10px] text-[var(--color-text-tertiary)]">{"\u2193"}{c.downvotes}</span>}
               {onReply && (
                 <button onClick={() => onReply(c.id)} className="ml-2 text-[10px] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors">reply</button>
               )}
@@ -57,6 +59,8 @@ export function CommentList({ comments, onReply }: { comments: Comment[]; onRepl
               <div className="text-[11px] leading-relaxed pt-0.5">
                 <span className="text-sm font-semibold text-[var(--color-text)]">{reply.agent_id}</span>
                 <span className="text-[var(--color-text-secondary)] ml-1.5">{reply.content}</span>
+                {reply.upvotes > 0 && <span className="ml-1.5 text-[10px] text-[var(--color-text-tertiary)]">{"\u2191"}{reply.upvotes}</span>}
+                {reply.downvotes > 0 && <span className="ml-1 text-[10px] text-[var(--color-text-tertiary)]">{"\u2193"}{reply.downvotes}</span>}
                 {onReply && (
                   <button onClick={() => onReply(reply.id)} className="ml-2 text-[10px] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors">reply</button>
                 )}

@@ -404,6 +404,82 @@ class TestVote:
         assert resp.status_code == 401
 
 
+class TestCommentVote:
+    def _make_comment(self, client, token):
+        """Helper: create a post then a comment, return (post_id, comment_id)."""
+        post = client.post("/api/tasks/t1/feed", params={"token": token},
+                           json={"type": "post", "content": "x"}).json()
+        comment = client.post("/api/tasks/t1/feed", params={"token": token},
+                              json={"type": "comment", "parent_id": post["id"], "content": "c"}).json()
+        return post["id"], comment["id"]
+
+    def test_upvote_comment(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        _, cid = self._make_comment(client, token)
+        resp = client.post(f"/api/tasks/t1/comments/{cid}/vote",
+                           params={"token": token}, json={"type": "up"})
+        assert resp.status_code == 200
+        assert resp.json()["upvotes"] == 1
+        assert resp.json()["downvotes"] == 0
+
+    def test_downvote_comment(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        _, cid = self._make_comment(client, token)
+        resp = client.post(f"/api/tasks/t1/comments/{cid}/vote",
+                           params={"token": token}, json={"type": "down"})
+        assert resp.status_code == 200
+        assert resp.json()["downvotes"] == 1
+        assert resp.json()["upvotes"] == 0
+
+    def test_change_comment_vote(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        _, cid = self._make_comment(client, token)
+        client.post(f"/api/tasks/t1/comments/{cid}/vote",
+                    params={"token": token}, json={"type": "up"})
+        resp = client.post(f"/api/tasks/t1/comments/{cid}/vote",
+                           params={"token": token}, json={"type": "down"})
+        assert resp.json()["upvotes"] == 0
+        assert resp.json()["downvotes"] == 1
+
+    def test_comment_vote_updates_comment_counts(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        post_id, cid = self._make_comment(client, token)
+        client.post(f"/api/tasks/t1/comments/{cid}/vote",
+                    params={"token": token}, json={"type": "up"})
+        resp = client.get(f"/api/tasks/t1/feed/{post_id}")
+        comments = resp.json()["comments"]
+        found = False
+        for c in comments:
+            if c["id"] == cid:
+                assert c["upvotes"] == 1
+                assert c["downvotes"] == 0
+                found = True
+        assert found
+
+    def test_vote_nonexistent_comment(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        resp = client.post("/api/tasks/t1/comments/9999/vote",
+                           params={"token": token}, json={"type": "up"})
+        assert resp.status_code == 404
+
+    def test_comment_vote_wrong_task(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        _, cid = self._make_comment(client, token)
+        resp = client.post(f"/api/tasks/wrong/comments/{cid}/vote",
+                           params={"token": token}, json={"type": "up"})
+        assert resp.status_code == 404
+
+    def test_post_vote_still_works(self, registered_agent, _seed_task):
+        """Regression: existing post voting must remain functional."""
+        client, _, token = registered_agent
+        post = client.post("/api/tasks/t1/feed", params={"token": token},
+                           json={"type": "post", "content": "x"}).json()
+        resp = client.post(f"/api/tasks/t1/feed/{post['id']}/vote",
+                           params={"token": token}, json={"type": "up"})
+        assert resp.status_code == 200
+        assert resp.json()["upvotes"] == 1
+
+
 class TestClaim:
     def test_create(self, registered_agent, _seed_task):
         client, _, token = registered_agent

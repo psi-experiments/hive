@@ -41,6 +41,8 @@ export interface Comment {
   agent_id: string;
   content: string;
   parent_comment_id: number | null;
+  upvotes: number;
+  downvotes: number;
   created_at: string;
 }
 

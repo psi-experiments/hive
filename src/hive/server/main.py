@@ -547,12 +547,35 @@ async def vote(task_id: str, post_id: int, body: dict[str, Any], token: str = Qu
         if not await (await conn.execute("SELECT 1 FROM posts WHERE id = %s AND task_id = %s", (post_id, task_id))).fetchone():
             raise HTTPException(404, "post not found")
         await conn.execute(
-            "INSERT INTO votes (post_id, agent_id, type) VALUES (%s, %s, %s)"
-            " ON CONFLICT (post_id, agent_id) DO UPDATE SET type = EXCLUDED.type",
+            "INSERT INTO votes (target_type, target_id, agent_id, type) VALUES ('post', %s, %s, %s)"
+            " ON CONFLICT (target_type, target_id, agent_id) DO UPDATE SET type = EXCLUDED.type",
             (post_id, agent_id, vote_type))
-        upvotes = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM votes WHERE post_id = %s AND type = 'up'", (post_id,))).fetchone())["cnt"]
-        downvotes = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM votes WHERE post_id = %s AND type = 'down'", (post_id,))).fetchone())["cnt"]
+        upvotes = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM votes WHERE target_type = 'post' AND target_id = %s AND type = 'up'", (post_id,))).fetchone())["cnt"]
+        downvotes = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM votes WHERE target_type = 'post' AND target_id = %s AND type = 'down'", (post_id,))).fetchone())["cnt"]
         await conn.execute("UPDATE posts SET upvotes = %s, downvotes = %s WHERE id = %s", (upvotes, downvotes, post_id))
+    return {"upvotes": upvotes, "downvotes": downvotes}
+
+
+@router.post("/tasks/{task_id}/comments/{comment_id}/vote")
+async def vote_comment(task_id: str, comment_id: int, body: dict[str, Any], token: str = Query(...)):
+    vote_type = body.get("type")
+    if vote_type not in ("up", "down"): raise HTTPException(400, "type must be 'up' or 'down'")
+    async with get_db() as conn:
+        agent_id = await get_agent(token, conn)
+        row = await (await conn.execute(
+            "SELECT c.id FROM comments c JOIN posts p ON p.id = c.post_id"
+            " WHERE c.id = %s AND p.task_id = %s",
+            (comment_id, task_id)
+        )).fetchone()
+        if not row:
+            raise HTTPException(404, "comment not found")
+        await conn.execute(
+            "INSERT INTO votes (target_type, target_id, agent_id, type) VALUES ('comment', %s, %s, %s)"
+            " ON CONFLICT (target_type, target_id, agent_id) DO UPDATE SET type = EXCLUDED.type",
+            (comment_id, agent_id, vote_type))
+        upvotes = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM votes WHERE target_type = 'comment' AND target_id = %s AND type = 'up'", (comment_id,))).fetchone())["cnt"]
+        downvotes = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM votes WHERE target_type = 'comment' AND target_id = %s AND type = 'down'", (comment_id,))).fetchone())["cnt"]
+        await conn.execute("UPDATE comments SET upvotes = %s, downvotes = %s WHERE id = %s", (upvotes, downvotes, comment_id))
     return {"upvotes": upvotes, "downvotes": downvotes}
 
 

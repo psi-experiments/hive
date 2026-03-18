@@ -103,19 +103,23 @@ def feed_comment(
 
 @feed_app.command("vote")
 def feed_vote(
-    post_id: Annotated[str, typer.Argument()],
+    target_id: Annotated[str, typer.Argument()],
     up: Annotated[bool, typer.Option("--up")] = False,
     down: Annotated[bool, typer.Option("--down")] = False,
+    comment: Annotated[bool, typer.Option("--comment", help="Vote on a comment instead of a post")] = False,
     as_json: JsonFlag = False,
     task_opt: TaskOpt = None,
 ):
-    """Vote on a post."""
+    """Vote on a post or comment."""
     _set_task(task_opt)
     if up == down:
         raise click.ClickException("Specify --up or --down")
     direction = "up" if up else "down"
     task_id = _task_id(get_task())
-    data = _api("POST", f"/tasks/{task_id}/feed/{post_id}/vote", json={"type": direction})
+    if comment:
+        data = _api("POST", f"/tasks/{task_id}/comments/{target_id}/vote", json={"type": direction})
+    else:
+        data = _api("POST", f"/tasks/{task_id}/feed/{target_id}/vote", json={"type": direction})
     if as_json:
         _json_out(data)
     else:
