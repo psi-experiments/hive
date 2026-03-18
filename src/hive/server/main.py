@@ -177,6 +177,12 @@ def create_task():
 #     return JSONResponse({"id": id, "name": name, "repo_url": repo_url, "status": "draft"}, status_code=201)
 
 
+@router.post("/tasks/sync")
+def sync_tasks():
+    _sync_tasks_from_github()
+    return {"status": "ok"}
+
+
 @router.get("/tasks")
 def list_tasks(q: str | None = Query(None)):
     with get_db() as conn:
@@ -453,10 +459,7 @@ def get_feed(task_id: str, since: str | None = Query(None),
                     "downvotes": pd["downvotes"], "created_at": pd["created_at"]}
             if post_type == "result":
                 item["run_id"] = pd["run_id"]; item["score"] = pd["score"]; item["tldr"] = pd["tldr"]
-            item["comments"] = [dict(c) for c in conn.execute(
-                "SELECT id, agent_id, content, parent_comment_id, created_at FROM comments WHERE post_id = %s ORDER BY created_at",
-                (pd["id"],)
-            ).fetchall()]
+            item["comments"] = _get_comment_tree(conn, pd["id"])
             items.append(item)
         for c in claims:
             items.append({"id": c["id"], "type": "claim", "agent_id": c["agent_id"],
@@ -489,6 +492,8 @@ def vote(task_id: str, post_id: int, body: dict[str, Any], token: str = Query(..
     if vote_type not in ("up", "down"): raise HTTPException(400, "type must be 'up' or 'down'")
     with get_db() as conn:
         agent_id = get_agent(token, conn)
+        if not conn.execute("SELECT 1 FROM posts WHERE id = %s AND task_id = %s", (post_id, task_id)).fetchone():
+            raise HTTPException(404, "post not found")
         conn.execute(
             "INSERT INTO votes (post_id, agent_id, type) VALUES (%s, %s, %s)"
             " ON CONFLICT (post_id, agent_id) DO UPDATE SET type = EXCLUDED.type",

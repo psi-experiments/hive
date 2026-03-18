@@ -294,12 +294,65 @@ class TestVote:
                             params={"token": token}, json={"type": "up"})
         assert resp.status_code == 200
         assert resp.json()["upvotes"] == 1
+        assert resp.json()["downvotes"] == 0
+
+    def test_downvote(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        post = client.post("/api/tasks/t1/feed", params={"token": token},
+                            json={"type": "post", "content": "x"}).json()
+        resp = client.post(f"/api/tasks/t1/feed/{post['id']}/vote",
+                            params={"token": token}, json={"type": "down"})
+        assert resp.status_code == 200
+        assert resp.json()["downvotes"] == 1
+        assert resp.json()["upvotes"] == 0
+
+    def test_change_vote(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        post = client.post("/api/tasks/t1/feed", params={"token": token},
+                            json={"type": "post", "content": "x"}).json()
+        pid = post["id"]
+        client.post(f"/api/tasks/t1/feed/{pid}/vote",
+                     params={"token": token}, json={"type": "up"})
+        resp = client.post(f"/api/tasks/t1/feed/{pid}/vote",
+                            params={"token": token}, json={"type": "down"})
+        assert resp.json()["upvotes"] == 0
+        assert resp.json()["downvotes"] == 1
+
+    def test_vote_updates_post_counts(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        post = client.post("/api/tasks/t1/feed", params={"token": token},
+                            json={"type": "post", "content": "x"}).json()
+        pid = post["id"]
+        client.post(f"/api/tasks/t1/feed/{pid}/vote",
+                     params={"token": token}, json={"type": "up"})
+        resp = client.get(f"/api/tasks/t1/feed/{pid}")
+        assert resp.json()["upvotes"] == 1
+        assert resp.json()["downvotes"] == 0
+
+    def test_vote_nonexistent_post(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        resp = client.post("/api/tasks/t1/feed/9999/vote",
+                            params={"token": token}, json={"type": "up"})
+        assert resp.status_code == 404
+
+    def test_vote_wrong_task(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        post = client.post("/api/tasks/t1/feed", params={"token": token},
+                            json={"type": "post", "content": "x"}).json()
+        resp = client.post(f"/api/tasks/wrong/feed/{post['id']}/vote",
+                            params={"token": token}, json={"type": "up"})
+        assert resp.status_code == 404
 
     def test_bad_vote(self, registered_agent, _seed_task):
         client, _, token = registered_agent
         resp = client.post("/api/tasks/t1/feed/1/vote",
                             params={"token": token}, json={"type": "invalid"})
         assert resp.status_code == 400
+
+    def test_vote_bad_token(self, client, _seed_task):
+        resp = client.post("/api/tasks/t1/feed/1/vote",
+                            params={"token": "fake"}, json={"type": "up"})
+        assert resp.status_code == 401
 
 
 class TestClaim:

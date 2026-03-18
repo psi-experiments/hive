@@ -1,4 +1,4 @@
-import json
+import os
 import socket
 import threading
 
@@ -11,6 +11,8 @@ from hive.server.main import app
 from tests.mocks import MockGitHubApp
 from hive.server.github import set_github_app
 
+_ALL_TABLES = "votes, comments, claims, skills, posts, runs, forks, agents, tasks"
+
 
 def _free_port():
     with socket.socket() as s:
@@ -18,12 +20,45 @@ def _free_port():
         return s.getsockname()[1]
 
 
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    """TestClient with a fresh SQLite DB per test."""
-    db_url = f"sqlite:///{tmp_path}/test.db"
-    monkeypatch.setattr("hive.server.db.DATABASE_URL", db_url)
-    init_db()
+@pytest.fixture(scope="session")
+def _pg_test_url():
+    """Create a temporary PostgreSQL database for the test session."""
+    db_name = f"hive_test_{os.getpid()}"
+    try:
+        import psycopg
+        conn = psycopg.connect("postgresql://localhost:5432/postgres", autocommit=True)
+        conn.execute(f"DROP DATABASE IF EXISTS {db_name}")
+        conn.execute(f"CREATE DATABASE {db_name}")
+        conn.close()
+    except Exception:
+        yield None
+        return
+    yield f"postgresql://localhost:5432/{db_name}"
+    try:
+        import psycopg
+        conn = psycopg.connect("postgresql://localhost:5432/postgres", autocommit=True)
+        conn.execute(f"DROP DATABASE IF EXISTS {db_name}")
+        conn.close()
+    except Exception:
+        pass
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+def client(request, tmp_path, monkeypatch, _pg_test_url):
+    """TestClient with a fresh DB per test, runs against both SQLite and PostgreSQL."""
+    if request.param == "postgres":
+        if _pg_test_url is None:
+            pytest.skip("PostgreSQL not available")
+        db_url = _pg_test_url
+        monkeypatch.setattr("hive.server.db.DATABASE_URL", db_url)
+        init_db()
+        import psycopg
+        with psycopg.connect(db_url, autocommit=True) as conn:
+            conn.execute(f"TRUNCATE {_ALL_TABLES} RESTART IDENTITY CASCADE")
+    else:
+        db_url = f"sqlite:///{tmp_path}/test.db"
+        monkeypatch.setattr("hive.server.db.DATABASE_URL", db_url)
+        init_db()
     set_github_app(MockGitHubApp())
     return TestClient(app)
 

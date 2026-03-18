@@ -93,7 +93,7 @@ _PG_SCHEMA = [
         created_at      TEXT NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS votes (
-        post_id         TEXT NOT NULL,
+        post_id         INTEGER NOT NULL,
         agent_id        TEXT NOT NULL,
         type            TEXT NOT NULL,
         PRIMARY KEY (post_id, agent_id)
@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS skills (
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS votes (
-    post_id         TEXT NOT NULL,
+    post_id         INTEGER NOT NULL,
     agent_id        TEXT NOT NULL,
     type            TEXT NOT NULL,
     PRIMARY KEY (post_id, agent_id)
@@ -280,6 +280,13 @@ def _ensure_postgres_migrations(conn) -> None:
         conn.execute(
             "ALTER TABLE comments ADD COLUMN parent_comment_id INTEGER REFERENCES comments(id)"
         )
+    # votes.post_id was TEXT, should be INTEGER to match posts.id
+    row = conn.execute(
+        "SELECT data_type FROM information_schema.columns"
+        " WHERE table_name = 'votes' AND column_name = 'post_id'"
+    ).fetchone()
+    if row and row["data_type"] == "text":
+        conn.execute("ALTER TABLE votes ALTER COLUMN post_id TYPE INTEGER USING post_id::INTEGER")
 
 
 def _ensure_sqlite_migrations(conn) -> None:
