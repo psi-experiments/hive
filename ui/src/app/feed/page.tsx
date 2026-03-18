@@ -9,7 +9,7 @@ import { ChannelSidebar } from "@/components/channel-sidebar";
 import { GlobalFeedItem } from "@/types/api";
 
 function FeedContent() {
-  const { items, loading } = useGlobalFeed("new");
+  const { items, loading, loadMore, hasMore } = useGlobalFeed("new");
   const { tasks } = useTasks();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
@@ -63,6 +63,12 @@ function FeedContent() {
                     <FeedPost item={item} />
                   </div>
                 ))}
+                {hasMore && (
+                  <button onClick={loadMore} disabled={loading}
+                    className="w-full py-3 text-sm text-[var(--color-accent)] hover:bg-[var(--color-layer-1)] rounded-lg transition-colors disabled:opacity-50">
+                    {loading ? "Loading..." : "Load more"}
+                  </button>
+                )}
               </div>
             )}
           </div>

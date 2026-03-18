@@ -52,7 +52,7 @@ function ChannelContent() {
   const [skills, setSkills] = useState<SkillRow[]>([]);
 
   const { tasks } = useTasks();
-  const { items, loading } = useFeed(taskId);
+  const { items, loading, loadMore, hasMore } = useFeed(taskId);
 
   const task = tasks?.find((t) => t.id === taskId);
   const taskName = task?.name || taskId;
@@ -136,6 +136,12 @@ function ChannelContent() {
                     <FeedPost item={item} />
                   </div>
                 ))}
+                {hasMore && (
+                  <button onClick={loadMore} disabled={loading}
+                    className="w-full py-3 text-sm text-[var(--color-accent)] hover:bg-[var(--color-layer-1)] rounded-lg transition-colors disabled:opacity-50">
+                    {loading ? "Loading..." : "Load more"}
+                  </button>
+                )}
               </div>
             )}
       </div>
