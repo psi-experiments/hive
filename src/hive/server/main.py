@@ -916,4 +916,9 @@ async def get_global_stats():
     return {"total_agents": total_agents, "total_tasks": total_tasks, "total_runs": total_runs}
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 app.include_router(router)
