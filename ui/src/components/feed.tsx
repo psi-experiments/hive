@@ -11,6 +11,7 @@ interface FeedProps {
   skills?: SkillSummary[];
   onRunClick?: (runId: string) => void;
   compact?: boolean;
+  taskId?: string;
 }
 
 type FilterType = "all" | "result" | "post" | "claim" | "skill";
@@ -30,9 +31,9 @@ function timeRemaining(expiresAt: string) {
   return `${Math.floor(diff / 60000)}m left`;
 }
 
-function Avatar({ id }: { id: string }) {
+export function Avatar({ id }: { id: string }) {
   const color = getAgentColor(id);
-  const initials = id.split("-").map((w) => w[0].toUpperCase()).join("");
+  const initials = id.split("-").filter(Boolean).map((w) => w[0]?.toUpperCase() ?? "").join("");
   return (
     <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-[10px] font-bold shrink-0 shadow-sm"
       style={{ background: `linear-gradient(135deg, ${color}, ${color}dd)` }}>
@@ -41,9 +42,9 @@ function Avatar({ id }: { id: string }) {
   );
 }
 
-function SmallAvatar({ id }: { id: string }) {
+export function SmallAvatar({ id }: { id: string }) {
   const color = getAgentColor(id);
-  const initials = id.split("-").map((w) => w[0].toUpperCase()).join("");
+  const initials = id.split("-").filter(Boolean).map((w) => w[0]?.toUpperCase() ?? "").join("");
   return (
     <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[8px] font-bold shrink-0"
       style={{ backgroundColor: color }}>
@@ -52,17 +53,43 @@ function SmallAvatar({ id }: { id: string }) {
   );
 }
 
-function CommentList({ comments }: { comments: Comment[] }) {
+export function CommentList({ comments, onReply }: { comments: Comment[]; onReply?: (commentId: number) => void }) {
   if (!comments.length) return null;
+  const topLevel = comments.filter((c) => c.parent_comment_id == null);
+  const repliesByParent = new Map<number, Comment[]>();
+  for (const c of comments) {
+    if (c.parent_comment_id != null) {
+      const arr = repliesByParent.get(c.parent_comment_id) || [];
+      arr.push(c);
+      repliesByParent.set(c.parent_comment_id, arr);
+    }
+  }
   return (
     <div className="mt-3 pt-3 border-t border-[var(--color-border-light)] space-y-2">
-      {comments.map((c) => (
-        <div key={c.id} className="flex gap-2">
-          <SmallAvatar id={c.agent_id} />
-          <div className="text-[11px] leading-relaxed pt-0.5">
-            <span className="text-sm font-semibold text-[var(--color-text)]">{c.agent_id}</span>
-            <span className="text-[var(--color-text-secondary)] ml-1.5">{c.content}</span>
+      {topLevel.map((c) => (
+        <div key={c.id}>
+          <div className="flex gap-2">
+            <SmallAvatar id={c.agent_id} />
+            <div className="text-[11px] leading-relaxed pt-0.5">
+              <span className="text-sm font-semibold text-[var(--color-text)]">{c.agent_id}</span>
+              <span className="text-[var(--color-text-secondary)] ml-1.5">{c.content}</span>
+              {onReply && (
+                <button onClick={() => onReply(c.id)} className="ml-2 text-[10px] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors">reply</button>
+              )}
+            </div>
           </div>
+          {repliesByParent.get(c.id)?.map((reply) => (
+            <div key={reply.id} className="flex gap-2 ml-8 mt-1.5">
+              <SmallAvatar id={reply.agent_id} />
+              <div className="text-[11px] leading-relaxed pt-0.5">
+                <span className="text-sm font-semibold text-[var(--color-text)]">{reply.agent_id}</span>
+                <span className="text-[var(--color-text-secondary)] ml-1.5">{reply.content}</span>
+                {onReply && (
+                  <button onClick={() => onReply(reply.id)} className="ml-2 text-[10px] text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors">reply</button>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       ))}
     </div>
@@ -230,12 +257,14 @@ function CompactSkillItem({ skill }: { skill: SkillSummary }) {
   );
 }
 
-function CompactItem({ item, onRunClick }: { item: FeedItem; onRunClick?: (id: string) => void }) {
+function CompactItem({ item, onRunClick, taskId }: { item: FeedItem; onRunClick?: (id: string) => void; taskId?: string }) {
+  const postHref = taskId ? `/task/${taskId}/post/${item.id}` : undefined;
+
   if (item.type === "result") {
-    return (
+    const inner = (
       <div
         className="flex items-center gap-3 px-3 py-2.5 hover:bg-[var(--color-layer-1)] cursor-pointer border-b border-solid border-[var(--color-border-light)] last:border-0 transition-colors"
-        onClick={() => onRunClick?.(item.run_id)}
+        onClick={postHref ? undefined : () => onRunClick?.(item.run_id)}
       >
         <ActivityIcon type="result" />
         <div className="flex-1 min-w-0">
@@ -251,10 +280,14 @@ function CompactItem({ item, onRunClick }: { item: FeedItem; onRunClick?: (id: s
         </span>
       </div>
     );
+    if (postHref) {
+      return <a href={postHref} className="block no-underline text-inherit">{inner}</a>;
+    }
+    return inner;
   }
   if (item.type === "post") {
-    return (
-      <div className="flex items-start gap-3 px-3 py-2.5 border-b border-solid border-[var(--color-border-light)] last:border-0">
+    const inner = (
+      <div className="flex items-start gap-3 px-3 py-2.5 hover:bg-[var(--color-layer-1)] cursor-pointer border-b border-solid border-[var(--color-border-light)] last:border-0 transition-colors">
         <ActivityIcon type="post" />
         <div className="flex-1 min-w-0">
           <div className="text-sm text-[var(--color-text)] line-clamp-2 leading-relaxed">{item.content}</div>
@@ -268,6 +301,10 @@ function CompactItem({ item, onRunClick }: { item: FeedItem; onRunClick?: (id: s
         </div>
       </div>
     );
+    if (postHref) {
+      return <a href={postHref} className="block no-underline text-inherit">{inner}</a>;
+    }
+    return inner;
   }
   if (item.type === "claim") {
     return (
@@ -287,7 +324,7 @@ function CompactItem({ item, onRunClick }: { item: FeedItem; onRunClick?: (id: s
   return null;
 }
 
-export function Feed({ items, skills = [], onRunClick, compact }: FeedProps) {
+export function Feed({ items, skills = [], onRunClick, compact, taskId }: FeedProps) {
   const [filter, setFilter] = useState<FilterType>("all");
   const filteredItems = filter === "all" ? items : filter === "skill" ? [] : items.filter((item) => item.type === filter);
   const counts: Record<FilterType, number> = {
@@ -324,7 +361,7 @@ export function Feed({ items, skills = [], onRunClick, compact }: FeedProps) {
             filteredItems.length === 0
               ? <div className="text-center text-[var(--color-text-tertiary)] text-xs py-6">No items</div>
               : filteredItems.map((item) => (
-                  <CompactItem key={`${item.type}-${item.id}`} item={item} onRunClick={onRunClick} />
+                  <CompactItem key={`${item.type}-${item.id}`} item={item} onRunClick={onRunClick} taskId={taskId} />
                 ))
           )}
         </div>

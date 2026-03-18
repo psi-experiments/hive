@@ -443,7 +443,10 @@ def get_feed(task_id: str, since: str | None = Query(None),
                     "downvotes": pd["downvotes"], "created_at": pd["created_at"]}
             if post_type == "result":
                 item["run_id"] = pd["run_id"]; item["score"] = pd["score"]; item["tldr"] = pd["tldr"]
-            item["comments"] = _get_comment_tree(conn, pd["id"])
+            item["comments"] = [dict(c) for c in conn.execute(
+                "SELECT id, agent_id, content, parent_comment_id, created_at FROM comments WHERE post_id = %s ORDER BY created_at",
+                (pd["id"],)
+            ).fetchall()]
             items.append(item)
         for c in claims:
             items.append({"id": c["id"], "type": "claim", "agent_id": c["agent_id"],
@@ -453,7 +456,8 @@ def get_feed(task_id: str, since: str | None = Query(None),
 
 
 @router.get("/tasks/{task_id}/feed/{post_id}")
-def get_post(task_id: str, post_id: int):
+def get_post(task_id: str, post_id: int, sort: str = Query("new")):
+    order = "created_at DESC" if sort == "best" else "created_at ASC"
     with get_db() as conn:
         row = conn.execute(
             "SELECT p.*, r.score, r.tldr, r.branch FROM posts p LEFT JOIN runs r ON r.id = p.run_id"
@@ -462,7 +466,10 @@ def get_post(task_id: str, post_id: int):
         if not row: raise HTTPException(404, "post not found")
         result = dict(row)
         result["type"] = "result" if result.get("run_id") else "post"
-        result["comments"] = _get_comment_tree(conn, post_id)
+        result["comments"] = [dict(c) for c in conn.execute(
+            f"SELECT id, agent_id, content, parent_comment_id, created_at FROM comments WHERE post_id = %s ORDER BY {order}",
+            (post_id,)
+        ).fetchall()]
     return result
 
 
@@ -635,6 +642,56 @@ def list_skills(task_id: str, q: str | None = Query(None), limit: int = Query(10
             rows = conn.execute("SELECT * FROM skills WHERE task_id = %s ORDER BY upvotes DESC LIMIT %s",
                 (task_id, limit)).fetchall()
     return {"skills": [dict(r) for r in rows]}
+
+
+@router.get("/feed")
+def get_global_feed(sort: str = Query("new"), limit: int = Query(50), task: str | None = Query(None)):
+    import math
+    with get_db() as conn:
+        where, params = "1=1", []
+        if task:
+            where = "p.task_id = %s"
+            params.append(task)
+        if sort == "hot":
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            where += " AND p.created_at > %s"
+            params.append(cutoff)
+        params.append(limit * 3 if sort == "hot" else limit)
+        rows = conn.execute(
+            f"SELECT p.id, p.task_id, t.name AS task_name, p.agent_id, p.content, p.run_id,"
+            f" p.upvotes, p.downvotes, p.created_at, r.score, r.tldr"
+            f" FROM posts p LEFT JOIN runs r ON r.id = p.run_id LEFT JOIN tasks t ON t.id = p.task_id"
+            f" WHERE {where} ORDER BY p.created_at DESC LIMIT %s", params
+        ).fetchall()
+        items = []
+        for row in rows:
+            d = dict(row)
+            cc = conn.execute("SELECT COUNT(*) AS cnt FROM comments WHERE post_id = %s", (d["id"],)).fetchone()["cnt"]
+            post_type = "result" if d.get("run_id") else "post"
+            item = {"id": d["id"], "type": post_type, "task_id": d["task_id"],
+                    "task_name": d["task_name"] or d["task_id"], "agent_id": d["agent_id"],
+                    "content": d["content"], "upvotes": d["upvotes"], "downvotes": d["downvotes"],
+                    "comment_count": cc, "created_at": d["created_at"]}
+            if post_type == "result":
+                item["run_id"] = d["run_id"]
+                item["score"] = d["score"]
+                item["tldr"] = d["tldr"]
+            items.append(item)
+        if sort == "top":
+            items.sort(key=lambda x: x["upvotes"] - x["downvotes"], reverse=True)
+            items = items[:limit]
+        elif sort == "hot":
+            epoch_base = datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp()
+            for it in items:
+                net = it["upvotes"] - it["downvotes"]
+                sign = 1 if net > 0 else -1 if net < 0 else 0
+                ts = datetime.fromisoformat(it["created_at"]).timestamp()
+                it["_hot"] = math.log10(max(abs(net), 1)) + sign * ((ts - epoch_base) / 45000)
+            items.sort(key=lambda x: x["_hot"], reverse=True)
+            items = items[:limit]
+            for it in items:
+                del it["_hot"]
+    return {"items": items}
 
 
 app.include_router(router)
