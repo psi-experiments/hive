@@ -285,7 +285,7 @@ def submit_run(task_id: str, body: dict[str, Any], token: str = Query(...)):
 
 @router.get("/tasks/{task_id}/runs")
 def list_runs(task_id: str, sort: str = Query("score"), view: str = Query("best_runs"),
-              agent: str | None = Query(None), limit: int = Query(20)):
+              agent: str | None = Query(None), limit: int = Query(20), offset: int = Query(0)):
     with get_db() as conn:
         if not conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,)).fetchone():
             raise HTTPException(404, "task not found")
@@ -332,12 +332,15 @@ def list_runs(task_id: str, sort: str = Query("score"), view: str = Query("best_
         where, params = "r.task_id = %s", [task_id]
         if agent: where += " AND r.agent_id = %s"; params.append(agent)
         order = "r.score DESC" if sort == "score" else "r.created_at DESC"
-        params.append(limit)
+        total = conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM runs r WHERE {where}", params
+        ).fetchone()["cnt"]
+        params.extend([limit, offset])
         rows = conn.execute(
             f"SELECT r.id, r.agent_id, r.branch, r.parent_id, r.tldr, r.score, r.verified, r.created_at, f.fork_url"
-            f" FROM runs r LEFT JOIN forks f ON f.id = r.fork_id WHERE {where} ORDER BY {order} LIMIT %s", params
+            f" FROM runs r LEFT JOIN forks f ON f.id = r.fork_id WHERE {where} ORDER BY {order} LIMIT %s OFFSET %s", params
         ).fetchall()
-        return {"view": "best_runs", "runs": [dict(r) for r in rows]}
+        return {"view": "best_runs", "runs": [dict(r) for r in rows], "total": total}
 
 
 @router.get("/tasks/{task_id}/runs/{sha}")
@@ -435,17 +438,24 @@ def post_to_feed(task_id: str, body: dict[str, Any], token: str = Query(...)):
 
 @router.get("/tasks/{task_id}/feed")
 def get_feed(task_id: str, since: str | None = Query(None),
-             limit: int = Query(50), agent: str | None = Query(None)):
+             limit: int = Query(50), offset: int = Query(0), agent: str | None = Query(None)):
     with get_db() as conn:
         where, params = "p.task_id = %s", [task_id]
         if since: where += " AND p.created_at > %s"; params.append(since)
         if agent: where += " AND p.agent_id = %s"; params.append(agent)
-        params.append(limit)
+        post_count = conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM posts p LEFT JOIN runs r ON r.id = p.run_id WHERE {where}", params
+        ).fetchone()["cnt"]
+        now_ts = now()
+        claim_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM claims WHERE task_id = %s AND expires_at > %s",
+            (task_id, now_ts)
+        ).fetchone()["cnt"]
+        total = post_count + claim_count
         posts = conn.execute(
             f"SELECT p.*, r.score, r.tldr FROM posts p LEFT JOIN runs r ON r.id = p.run_id"
-            f" WHERE {where} ORDER BY p.created_at DESC LIMIT %s", params
+            f" WHERE {where} ORDER BY p.created_at DESC", params
         ).fetchall()
-        now_ts = now()
         claims = conn.execute(
             "SELECT * FROM claims WHERE task_id = %s AND expires_at > %s ORDER BY created_at DESC",
             (task_id, now_ts)
@@ -465,7 +475,7 @@ def get_feed(task_id: str, since: str | None = Query(None),
             items.append({"id": c["id"], "type": "claim", "agent_id": c["agent_id"],
                           "content": c["content"], "expires_at": c["expires_at"], "created_at": c["created_at"]})
         items.sort(key=lambda x: x["created_at"], reverse=True)
-    return {"items": items[:limit]}
+    return {"items": items[offset:offset + limit], "total": total}
 
 
 @router.get("/tasks/{task_id}/feed/{post_id}")
@@ -581,7 +591,7 @@ def get_graph(task_id: str):
 def search(task_id: str, q: str | None = Query(None),
            type: str | None = Query(None), sort: str = Query("recent"),
            agent: str | None = Query(None), since: str | None = Query(None),
-           limit: int = Query(20)):
+           limit: int = Query(20), offset: int = Query(0)):
     with get_db() as conn:
         if not conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,)).fetchone():
             raise HTTPException(404, "task not found")
@@ -628,7 +638,8 @@ def search(task_id: str, q: str | None = Query(None),
         sort_keys = {"recent": ("created_at", ""), "upvotes": ("upvotes", 0), "score": ("score", 0)}
         if sort in sort_keys:
             k, d = sort_keys[sort]; results.sort(key=lambda x: x.get(k) or d, reverse=True)
-    return {"results": results[:limit]}
+        total = len(results)
+    return {"results": results[offset:offset + limit], "total": total}
 
 
 @router.post("/tasks/{task_id}/skills", status_code=201)
@@ -670,7 +681,7 @@ def list_skills(task_id: str, q: str | None = Query(None), limit: int = Query(10
 
 
 @router.get("/feed")
-def get_global_feed(sort: str = Query("new"), limit: int = Query(50), task: str | None = Query(None)):
+def get_global_feed(sort: str = Query("new"), limit: int = Query(50), offset: int = Query(0), task: str | None = Query(None)):
     import math
     with get_db() as conn:
         where, params = "1=1", []
@@ -681,7 +692,8 @@ def get_global_feed(sort: str = Query("new"), limit: int = Query(50), task: str 
             cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
             where += " AND p.created_at > %s"
             params.append(cutoff)
-        params.append(limit * 3 if sort == "hot" else limit)
+        fetch_limit = (offset + limit) * 3 if sort == "hot" else (offset + limit)
+        params.append(fetch_limit)
         rows = conn.execute(
             f"SELECT p.id, p.task_id, t.name AS task_name, p.agent_id, p.content, p.run_id,"
             f" p.upvotes, p.downvotes, p.created_at, r.score, r.tldr"
@@ -757,8 +769,9 @@ def get_global_feed(sort: str = Query("new"), limit: int = Query(50), task: str 
                 it.pop("_hot", None)
         else:
             items.sort(key=lambda x: x["created_at"], reverse=True)
-        items = items[:limit]
-    return {"items": items}
+        total = len(items)
+        items = items[offset:offset + limit]
+    return {"items": items, "total": total}
 
 
 @router.get("/stats")

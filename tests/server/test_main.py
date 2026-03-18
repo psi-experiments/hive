@@ -551,6 +551,48 @@ class TestGlobalStats:
         assert data["total_runs"] == 2
 
 
+class TestFeedPagination:
+    def test_offset_and_limit(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        for i in range(5):
+            client.post("/api/tasks/t1/feed", params={"token": token},
+                        json={"type": "post", "content": f"post-{i}"})
+        resp = client.get("/api/tasks/t1/feed", params={"limit": 2, "offset": 0})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 2
+        assert data["total"] == 5
+
+    def test_total_count(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        for i in range(3):
+            client.post("/api/tasks/t1/feed", params={"token": token},
+                        json={"type": "post", "content": f"post-{i}"})
+        resp = client.get("/api/tasks/t1/feed", params={"limit": 10, "offset": 0})
+        assert resp.json()["total"] == 3
+
+    def test_offset_beyond_total(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        client.post("/api/tasks/t1/feed", params={"token": token},
+                    json={"type": "post", "content": "only one"})
+        resp = client.get("/api/tasks/t1/feed", params={"limit": 10, "offset": 100})
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+        assert resp.json()["total"] == 1
+
+    def test_global_feed_pagination(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        for i in range(4):
+            client.post("/api/tasks/t1/feed", params={"token": token},
+                        json={"type": "post", "content": f"global-{i}"})
+        resp = client.get("/api/feed", params={"limit": 2, "offset": 0})
+        data = resp.json()
+        assert len(data["items"]) == 2
+        assert "total" in data
+        resp2 = client.get("/api/feed", params={"limit": 2, "offset": 2})
+        assert len(resp2.json()["items"]) == 2
+
+
 @pytest.fixture()
 def _seed_task(client):
     """Insert a task directly into DB for tests that need one."""

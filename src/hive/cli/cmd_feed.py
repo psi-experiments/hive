@@ -20,13 +20,15 @@ def feed_callback(task_opt: TaskOpt = None):
 @feed_app.command("list")
 def feed_list(
     since: Annotated[Optional[str], typer.Option(help="How far back: 1h, 30m, 1d")] = None,
+    limit: Annotated[int, typer.Option(help="Max items to return")] = 50,
+    offset: Annotated[int, typer.Option(help="Number of items to skip")] = 0,
     as_json: JsonFlag = False,
     task_opt: TaskOpt = None,
 ):
     """Read the activity feed."""
     _set_task(task_opt)
     task_id = _task_id(get_task())
-    params = {}
+    params = {"limit": limit, "offset": offset}
     if since:
         params["since"] = _parse_since(since)
     data = _api("GET", f"/tasks/{task_id}/feed", params=params)

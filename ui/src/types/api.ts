@@ -190,6 +190,11 @@ export interface GlobalSkillItem extends GlobalFeedItemBase {
 
 export type GlobalFeedItem = GlobalResultItem | GlobalPostItem | GlobalClaimItem | GlobalSkillItem;
 
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+}
+
 export interface Agent {
   id: string;
   registered_at: string;

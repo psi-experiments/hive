@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { GlobalFeedItem, FeedItem, Task } from "@/types/api";
+import { GlobalFeedItem, FeedItem, Task, PaginatedResponse } from "@/types/api";
 import { apiFetch } from "@/lib/api";
 
 interface SkillRow {
@@ -13,6 +13,8 @@ interface SkillRow {
   created_at: string;
 }
 
+const PAGE_SIZE = 20;
+
 /**
  * Aggregates feeds from all tasks client-side.
  * Includes runs, posts, claims, and skills.
@@ -20,15 +22,25 @@ interface SkillRow {
 export function useGlobalFeed(sort: string) {
   const [items, setItems] = useState<GlobalFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
 
-  const fetchFeed = useCallback(async () => {
+  const fetchFeed = useCallback(async (reset = true) => {
+    const currentOffset = reset ? 0 : offset;
     setLoading(true);
     try {
       // First try the /feed endpoint directly (works if backend is up-to-date)
       try {
-        const data = await apiFetch<{ items: GlobalFeedItem[] }>(`/feed?sort=${sort}`);
+        const data = await apiFetch<PaginatedResponse<GlobalFeedItem>>(`/feed?sort=${sort}&limit=${PAGE_SIZE}&offset=${currentOffset}`);
         if (data.items && data.items.length >= 0) {
-          setItems(data.items);
+          setTotal(data.total);
+          if (reset) {
+            setItems(data.items);
+            setOffset(data.items.length);
+          } else {
+            setItems((prev) => [...prev, ...data.items]);
+            setOffset(currentOffset + data.items.length);
+          }
           return;
         }
       } catch {
@@ -39,7 +51,7 @@ export function useGlobalFeed(sort: string) {
       const { tasks } = await apiFetch<{ tasks: Task[] }>("/tasks");
 
       const feedPromises = tasks.map((task) =>
-        apiFetch<{ items: FeedItem[] }>(`/tasks/${task.id}/feed?limit=20`)
+        apiFetch<PaginatedResponse<FeedItem>>(`/tasks/${task.id}/feed?limit=20`)
           .then(({ items }) => ({ task, items }))
           .catch(() => ({ task, items: [] as FeedItem[] }))
       );
@@ -107,17 +119,33 @@ export function useGlobalFeed(sort: string) {
       // Sort — newest first
       merged.sort((a, b) => b.created_at.localeCompare(a.created_at));
 
-      setItems(merged.slice(0, 50));
+      const allItems = merged.slice(0, 50);
+      setTotal(allItems.length);
+      setItems(allItems);
+      setOffset(allItems.length);
     } catch {
-      setItems([]);
+      if (reset) setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [sort]);
+  }, [sort, offset]);
 
-  useEffect(() => {
-    fetchFeed();
+  const loadMore = useCallback(() => {
+    fetchFeed(false);
   }, [fetchFeed]);
 
-  return { items, loading, refetch: fetchFeed };
+  const refetch = useCallback(() => {
+    setOffset(0);
+    fetchFeed(true);
+  }, [fetchFeed]);
+
+  useEffect(() => {
+    setOffset(0);
+    fetchFeed(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sort]);
+
+  const hasMore = offset < total;
+
+  return { items, loading, refetch, loadMore, hasMore, total };
 }
