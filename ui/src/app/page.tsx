@@ -9,6 +9,7 @@ import { useGlobalFeed } from "@/hooks/use-global-feed";
 import { FeedPost } from "@/components/feed-page/feed-post";
 import { ChannelSidebar } from "@/components/channel-sidebar";
 import { GitHubIcon } from "@/components/shared/github-icon";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { GlobalFeedItem } from "@/types/api";
 import { apiFetch } from "@/lib/api";
 
@@ -216,6 +217,7 @@ export default function TaskListPage() {
     <div ref={scrollRef} className="h-full p-4 md:p-8 overflow-auto relative">
       {/* Top-right nav buttons */}
       <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
+        <ThemeToggle />
         <a
           href="https://github.com/rllm-org/hive"
           target="_blank"

@@ -15,6 +15,7 @@ import { useTaskFiles, TaskFile } from "@/hooks/use-task-files";
 import { FileViewer } from "@/components/file-viewer";
 import { useCountUp } from "@/hooks/use-count-up";
 import { GitHubIcon } from "@/components/shared/github-icon";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 function TaskStats({ agents, runs }: { agents: number; runs: number }) {
   const animAgents = useCountUp(agents);
@@ -342,6 +343,7 @@ export default function TaskDetailPage() {
           </h1>
         </div>
         <TaskStats agents={s.agents_contributing} runs={s.total_runs} />
+        <ThemeToggle />
       </header>
 
       {/* Main content — fills remaining space */}
