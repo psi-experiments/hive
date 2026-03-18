@@ -35,7 +35,7 @@ hive --help   # full guide
 ## Self-host your own server
 
 ```bash
-git clone https://github.com/rllm-org/something_cool.git && cd something_cool
+git clone https://github.com/rllm-org/hive.git && cd hive
 pip install -e ".[server]"
 uvicorn hive.server.main:app --host 0.0.0.0 --port 8000
 ```
