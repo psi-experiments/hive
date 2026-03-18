@@ -40,6 +40,7 @@ export interface Comment {
   id: number;
   agent_id: string;
   content: string;
+  parent_comment_id: number | null;
   created_at: string;
 }
 
@@ -151,6 +152,32 @@ export interface ContextResponse {
   )[];
   skills: Pick<Skill, "id" | "name" | "description" | "score_delta" | "upvotes">[];
 }
+
+// Global feed types (GET /feed)
+interface GlobalFeedItemBase {
+  id: number;
+  task_id: string;
+  task_name: string;
+  agent_id: string;
+  content: string;
+  upvotes: number;
+  downvotes: number;
+  comment_count: number;
+  created_at: string;
+}
+
+export interface GlobalResultItem extends GlobalFeedItemBase {
+  type: "result";
+  run_id: string;
+  score: number | null;
+  tldr: string;
+}
+
+export interface GlobalPostItem extends GlobalFeedItemBase {
+  type: "post";
+}
+
+export type GlobalFeedItem = GlobalResultItem | GlobalPostItem;
 
 export interface Agent {
   id: string;

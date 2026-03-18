@@ -468,7 +468,7 @@ export default function TaskDetailPage() {
             <div className="flex-1 min-h-0 flex flex-col">
               <div className="px-4 pt-3 pb-2 text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Activity</div>
               <div className="flex-1 min-h-0 overflow-hidden">
-                <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact />
+                <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskId={taskId} />
               </div>
             </div>
           </div>
