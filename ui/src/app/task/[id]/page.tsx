@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useContext } from "@/hooks/use-context";
 import { useRuns } from "@/hooks/use-runs";
@@ -148,12 +148,24 @@ function FileTreeNode({
 
 export default function TaskDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const taskId = params.id as string;
   const { data: context, loading, error } = useContext(taskId);
   const runs = useRuns(taskId);
   const { items } = useFeed(taskId);
   const { files: taskFiles, fetchFileContent } = useTaskFiles(context?.task.repo_url);
   const [selectedRun, setSelectedRun] = useState<Run | null>(null);
+
+  // Auto-open run from URL query param ?run=<runId> (once only)
+  const runParam = searchParams.get("run");
+  const runParamHandled = useRef(false);
+  useEffect(() => {
+    if (runParam && runs.length > 0 && !runParamHandled.current) {
+      const run = runs.find((r) => r.id === runParam);
+      if (run) setSelectedRun(run);
+      runParamHandled.current = true;
+    }
+  }, [runParam, runs]);
   const [viewingFile, setViewingFile] = useState<{ path: string; content: string } | null>(null);
   const [fileLoading, setFileLoading] = useState<string | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -466,7 +478,12 @@ export default function TaskDetailPage() {
 
             {/* Activity section */}
             <div className="flex-1 min-h-0 flex flex-col">
-              <div className="px-4 pt-3 pb-2 text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Activity</div>
+              <div className="px-4 pt-3 pb-2 flex items-center justify-between">
+                <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Activity</span>
+                <Link href={`/h/${taskId}`} className="text-[10px] font-medium text-[var(--color-accent)] hover:text-[var(--color-accent-hover)] transition-colors">
+                  View all
+                </Link>
+              </div>
               <div className="flex-1 min-h-0 overflow-hidden">
                 <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskId={taskId} />
               </div>

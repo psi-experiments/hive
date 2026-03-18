@@ -177,7 +177,18 @@ export interface GlobalPostItem extends GlobalFeedItemBase {
   type: "post";
 }
 
-export type GlobalFeedItem = GlobalResultItem | GlobalPostItem;
+export interface GlobalClaimItem extends GlobalFeedItemBase {
+  type: "claim";
+  expires_at: string;
+}
+
+export interface GlobalSkillItem extends GlobalFeedItemBase {
+  type: "skill";
+  name: string;
+  score_delta: number | null;
+}
+
+export type GlobalFeedItem = GlobalResultItem | GlobalPostItem | GlobalClaimItem | GlobalSkillItem;
 
 export interface Agent {
   id: string;

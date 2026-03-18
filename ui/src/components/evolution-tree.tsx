@@ -94,13 +94,6 @@ export function EvolutionTree({ runs, onRunClick }: EvolutionTreeProps) {
     const nodeMap = new Map<string, GraphNode>();
     const links: GraphLink[] = [];
 
-    // Score range for x-positioning
-    const scores = runs.filter((r) => r.score !== null).map((r) => r.score!);
-    const minScore = scores.length > 0 ? Math.min(...scores) : 0;
-    const maxScore = scores.length > 0 ? Math.max(...scores) : 1;
-    const scoreRange = maxScore - minScore || 1;
-    const SPREAD_X = 600;
-
     // Build children map for tree layout
     const children = new Map<string, string[]>();
     children.set(ARTIFACT_ID, []);
@@ -116,19 +109,34 @@ export function EvolutionTree({ runs, onRunClick }: EvolutionTreeProps) {
       }
     }
 
-    // Sort children by created_at for deterministic order
+    // Sort children by score (best at top) for a clean visual
     const runById = new Map(runs.map((r) => [r.id, r]));
     for (const [, kids] of children) {
       kids.sort((a, b) => {
         const ra = runById.get(a), rb = runById.get(b);
         if (!ra || !rb) return 0;
-        return new Date(ra.created_at).getTime() - new Date(rb.created_at).getTime();
+        return (rb.score ?? 0) - (ra.score ?? 0);
       });
     }
 
-    // Tree layout: leaves get sequential y slots, parents center on children.
-    // fx = score-based (same score = same vertical line)
-    const GAP_Y = 28;
+    // Score range for x-positioning
+    const scores = runs.filter((r) => r.score !== null).map((r) => r.score!);
+    const minScore = scores.length > 0 ? Math.min(...scores) : 0;
+    const maxScore = scores.length > 0 ? Math.max(...scores) : 1;
+    const scoreRange = maxScore - minScore || 1;
+    const SPREAD_X = 1200;
+
+    // Count leaves to compute GAP_Y dynamically
+    let leafCount = 0;
+    function countLeaves(nodeId: string) {
+      const kids = children.get(nodeId) || [];
+      if (kids.length === 0) { leafCount++; return; }
+      for (const kid of kids) countLeaves(kid);
+    }
+    countLeaves(ARTIFACT_ID);
+
+    // Layout: X = score-based (low left, high right), Y = leaf slots (compact)
+    const GAP_Y = Math.max(3, Math.min(28, 1500 / Math.max(leafCount, 1)));
     let leafSlot = 0;
     const posMap = new Map<string, { fx: number; fy: number }>();
 
@@ -248,7 +256,7 @@ export function EvolutionTree({ runs, onRunClick }: EvolutionTreeProps) {
 
     const scaleX = (dimensions.width - pad * 2) / graphW;
     const scaleY = (dimensions.height - pad * 2) / graphH;
-    const zoom = Math.min(scaleX, scaleY, 2.5);
+    const zoom = Math.min(scaleX, scaleY);
 
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
@@ -258,11 +266,18 @@ export function EvolutionTree({ runs, onRunClick }: EvolutionTreeProps) {
     setReady(true);
   }, [graphData, dimensions]);
 
-  // Run fit on mount and when data changes
+  // Run fit on mount — retry until ref is available
   useEffect(() => {
-    // Small delay to ensure the ForceGraph2D ref is ready
-    const timer = setTimeout(fitGraph, 100);
-    return () => clearTimeout(timer);
+    let attempts = 0;
+    const tryFit = () => {
+      if (fgRef.current) {
+        fitGraph();
+      } else if (attempts < 20) {
+        attempts++;
+        setTimeout(tryFit, 50);
+      }
+    };
+    tryFit();
   }, [fitGraph]);
 
   // Custom node rendering on Canvas
@@ -454,7 +469,7 @@ export function EvolutionTree({ runs, onRunClick }: EvolutionTreeProps) {
           d3AlphaDecay={0.03}
           d3AlphaMin={0}
           enableNodeDrag={false}
-          minZoom={0.3}
+          minZoom={0.05}
           maxZoom={5}
         />
       )}
