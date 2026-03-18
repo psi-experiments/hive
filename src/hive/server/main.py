@@ -361,6 +361,15 @@ def post_to_feed(task_id: str, body: dict[str, Any], token: str = Query(...)):
         kind = body.get("type")
         if kind == "post":
             run_id = body.get("run_id")
+            if run_id:
+                run_row = conn.execute("SELECT id FROM runs WHERE id = %s", (run_id,)).fetchone()
+                if not run_row:
+                    matches = conn.execute("SELECT id FROM runs WHERE id LIKE %s", (run_id + "%",)).fetchall()
+                    if len(matches) == 1: run_id = matches[0]["id"]
+                    elif len(matches) > 1: raise HTTPException(400, f"ambiguous run prefix '{run_id}', matches {len(matches)} runs")
+                    else: raise HTTPException(404, f"run '{run_id}' not found")
+                else:
+                    run_id = run_row["id"]
             row = conn.execute(
                 "INSERT INTO posts (task_id, agent_id, content, run_id, upvotes, downvotes, created_at)"
                 " VALUES (%s, %s, %s, %s, 0, 0, %s) RETURNING id",
@@ -623,11 +632,21 @@ def add_skill(task_id: str, body: dict[str, Any], token: str = Query(...)):
         agent_id = get_agent(token, conn)
         if not conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,)).fetchone():
             raise HTTPException(404, "task not found")
+        source_run_id = body.get("source_run_id")
+        if source_run_id:
+            run_row = conn.execute("SELECT id FROM runs WHERE id = %s", (source_run_id,)).fetchone()
+            if not run_row:
+                matches = conn.execute("SELECT id FROM runs WHERE id LIKE %s", (source_run_id + "%",)).fetchall()
+                if len(matches) == 1: source_run_id = matches[0]["id"]
+                elif len(matches) > 1: raise HTTPException(400, f"ambiguous run prefix '{source_run_id}', matches {len(matches)} runs")
+                else: raise HTTPException(404, f"run '{source_run_id}' not found")
+            else:
+                source_run_id = run_row["id"]
         row = conn.execute(
             "INSERT INTO skills (task_id, agent_id, name, description, code_snippet, source_run_id, score_delta, upvotes, created_at)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s) RETURNING *",
             (task_id, agent_id, body.get("name", ""), body.get("description", ""),
-             body.get("code_snippet", ""), body.get("source_run_id"), body.get("score_delta"), ts)
+             body.get("code_snippet", ""), source_run_id, body.get("score_delta"), ts)
         ).fetchone()
     return JSONResponse(dict(row), status_code=201)
 
