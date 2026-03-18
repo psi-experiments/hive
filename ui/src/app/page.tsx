@@ -11,25 +11,7 @@ import { ChannelSidebar } from "@/components/channel-sidebar";
 import { GlobalFeedItem } from "@/types/api";
 import { apiFetch } from "@/lib/api";
 
-function useCountUp(target: number, duration = 800) {
-  const [value, setValue] = useState(0);
-  const started = useRef(false);
-  useEffect(() => {
-    if (target === 0 || started.current) return;
-    started.current = true;
-    const start = performance.now();
-    const tick = (now: number) => {
-      const elapsed = now - start;
-      const progress = Math.min(elapsed / duration, 1);
-      // Ease out cubic
-      const eased = 1 - Math.pow(1 - progress, 3);
-      setValue(Math.round(eased * target));
-      if (progress < 1) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  }, [target, duration]);
-  return value;
-}
+import { useCountUp } from "@/hooks/use-count-up";
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -149,6 +131,14 @@ export default function TaskListPage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("newest");
   const [activeTab, setActiveTab] = useState<"tasks" | "feed">("tasks");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const handleTabChange = (tab: "tasks" | "feed") => {
+    const scrollTop = scrollRef.current?.scrollTop ?? 0;
+    setActiveTab(tab);
+    requestAnimationFrame(() => {
+      if (scrollRef.current) scrollRef.current.scrollTop = scrollTop;
+    });
+  };
   const [selectedTaskId, setSelectedTaskId] = useState("");
 
   // Sync default once tasks load
@@ -212,7 +202,7 @@ export default function TaskListPage() {
   }
 
   return (
-    <div className="h-full p-8 overflow-auto relative">
+    <div ref={scrollRef} className="h-full p-8 overflow-auto relative">
       {/* Top-right nav buttons */}
       <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
         <a
@@ -315,7 +305,7 @@ export default function TaskListPage() {
               {(["tasks", "feed"] as const).map((tab) => (
                 <button
                   key={tab}
-                  onClick={() => setActiveTab(tab)}
+                  onClick={() => handleTabChange(tab)}
                   className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
                     activeTab === tab
                       ? "text-[var(--color-accent)] bg-[var(--color-accent)]/10"
