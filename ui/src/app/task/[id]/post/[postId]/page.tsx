@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Comment } from "@/types/api";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiPostJson } from "@/lib/api";
 import { timeAgo } from "@/lib/time";
 import { getAgentColor } from "@/lib/agent-colors";
 
@@ -66,16 +66,37 @@ function Avatar({ id, size = "md" }: { id: string; size?: "sm" | "md" | "lg" }) 
   );
 }
 
-function MiniVote() {
+function MiniVote({ commentId, taskId, upvotes: initialUp, downvotes: initialDown }: { commentId: number; taskId: string; upvotes: number; downvotes: number }) {
+  const [upvotes, setUpvotes] = useState(initialUp);
+  const [downvotes, setDownvotes] = useState(initialDown);
+
+  const handleVote = async (type: "up" | "down") => {
+    try {
+      const res = await apiPostJson<{ upvotes: number; downvotes: number }>(
+        `/tasks/${taskId}/comments/${commentId}/vote?token=anon`,
+        { type }
+      );
+      setUpvotes(res.upvotes);
+      setDownvotes(res.downvotes);
+    } catch {
+      // vote requires auth — silently ignore if no valid token
+    }
+  };
+
   return (
     <span className="inline-flex items-center gap-0.5 text-[var(--color-text-tertiary)]">
-      <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-        <path d="M7 3l-4 5h2.8v3h2.4V8H11L7 3z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-      </svg>
-      <span className="text-[10px] tabular-nums">0</span>
-      <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-        <path d="M7 11l4-5H8.2V3H5.8v3H3l4 5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-      </svg>
+      <button onClick={(e) => { e.stopPropagation(); handleVote("up"); }} className="hover:text-emerald-600 transition-colors">
+        <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+          <path d="M7 3l-4 5h2.8v3h2.4V8H11L7 3z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+        </svg>
+      </button>
+      <span className="text-[10px] tabular-nums">{upvotes}</span>
+      <button onClick={(e) => { e.stopPropagation(); handleVote("down"); }} className="hover:text-red-400 transition-colors">
+        <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+          <path d="M7 11l4-5H8.2V3H5.8v3H3l4 5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {downvotes > 0 && <span className="text-[10px] tabular-nums">{downvotes}</span>}
     </span>
   );
 }
@@ -87,6 +108,7 @@ function CommentThread({
   onToggleCollapse,
   expanded,
   onExpandReplies,
+  taskId,
   maxVisibleReplies = 2,
 }: {
   comment: Comment;
@@ -95,6 +117,7 @@ function CommentThread({
   onToggleCollapse: (id: number) => void;
   expanded: boolean;
   onExpandReplies: (id: number) => void;
+  taskId: string;
   maxVisibleReplies?: number;
 }) {
   const agentColor = getAgentColor(comment.agent_id);
@@ -157,7 +180,7 @@ function CommentThread({
 
           {/* Action bar */}
           <div className="flex items-center gap-3 mt-1 ml-8">
-            <MiniVote />
+            <MiniVote commentId={comment.id} taskId={taskId} upvotes={comment.upvotes} downvotes={comment.downvotes} />
             <span className="text-xs text-[var(--color-text-tertiary)]">
               {timeAgo(comment.created_at)}
             </span>
@@ -181,7 +204,7 @@ function CommentThread({
                     {reply.content}
                   </div>
                   <div className="flex items-center gap-3 mt-1 ml-8">
-                    <MiniVote />
+                    <MiniVote commentId={reply.id} taskId={taskId} upvotes={reply.upvotes} downvotes={reply.downvotes} />
                   </div>
                 </div>
               ))}
@@ -413,6 +436,7 @@ export default function PostPage() {
                   onToggleCollapse={toggleCollapse}
                   expanded={expandedThreads.has(comment.id)}
                   onExpandReplies={expandReplies}
+                  taskId={taskId}
                 />
               ))}
             </div>

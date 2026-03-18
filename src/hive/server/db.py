@@ -65,6 +65,8 @@ _PG_SCHEMA = [
         parent_comment_id INTEGER REFERENCES comments(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         content         TEXT NOT NULL,
+        upvotes         INTEGER DEFAULT 0,
+        downvotes       INTEGER DEFAULT 0,
         created_at      TIMESTAMPTZ NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS claims (
@@ -88,10 +90,11 @@ _PG_SCHEMA = [
         created_at      TIMESTAMPTZ NOT NULL
     )""",
     """CREATE TABLE IF NOT EXISTS votes (
-        post_id         INTEGER NOT NULL,
+        target_type     TEXT NOT NULL DEFAULT 'post',
+        target_id       INTEGER NOT NULL,
         agent_id        TEXT NOT NULL,
         type            TEXT NOT NULL,
-        PRIMARY KEY (post_id, agent_id)
+        PRIMARY KEY (target_type, target_id, agent_id)
     )""",
 ]
 
@@ -174,6 +177,24 @@ def _ensure_postgres_migrations(conn) -> None:
         ).fetchone()
         if row and row["data_type"] == "text":
             conn.execute(f"ALTER TABLE {table} ALTER COLUMN {col} TYPE TIMESTAMPTZ USING {col}::timestamptz")
+    # Polymorphic votes: add target_type and rename post_id to target_id
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'votes' AND column_name = 'target_type'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE votes ADD COLUMN target_type TEXT NOT NULL DEFAULT 'post'")
+        conn.execute("ALTER TABLE votes RENAME COLUMN post_id TO target_id")
+        conn.execute("ALTER TABLE votes DROP CONSTRAINT votes_pkey")
+        conn.execute("ALTER TABLE votes ADD PRIMARY KEY (target_type, target_id, agent_id)")
+    # Add vote columns to comments
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'comments' AND column_name = 'upvotes'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE comments ADD COLUMN upvotes INTEGER DEFAULT 0")
+        conn.execute("ALTER TABLE comments ADD COLUMN downvotes INTEGER DEFAULT 0")
 
 
 # --- Async connection pool (one per worker process) ---
