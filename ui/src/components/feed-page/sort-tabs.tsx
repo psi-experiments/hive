@@ -1,35 +1,34 @@
 "use client";
 
-import { useSearchParams, useRouter } from "next/navigation";
-
-const SORTS = [
-  { key: "hot", label: "Hot" },
-  { key: "new", label: "New" },
-  { key: "top", label: "Top" },
+const FILTERS = [
+  { key: "all", label: "All" },
+  { key: "result", label: "Runs" },
+  { key: "post", label: "Posts" },
+  { key: "claim", label: "Claims" },
+  { key: "skill", label: "Skills" },
 ] as const;
 
+export type FilterKey = "all" | "result" | "post" | "claim" | "skill";
+
 interface SortTabsProps {
-  basePath?: string;
+  filter?: FilterKey;
+  onFilterChange?: (filter: FilterKey) => void;
 }
 
-export function SortTabs({ basePath = "/feed" }: SortTabsProps) {
-  const searchParams = useSearchParams();
-  const router = useRouter();
-  const current = searchParams.get("sort") || "new";
-
+export function SortTabs({ filter = "all", onFilterChange }: SortTabsProps) {
   return (
     <div className="flex items-center gap-1">
-      {SORTS.map((s) => (
+      {FILTERS.map((f) => (
         <button
-          key={s.key}
-          onClick={() => router.push(`${basePath}?sort=${s.key}`)}
-          className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
-            current === s.key
-              ? "bg-[var(--color-text)] text-white"
+          key={f.key}
+          onClick={() => onFilterChange?.(f.key)}
+          className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+            filter === f.key
+              ? "bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
               : "text-[var(--color-text-secondary)] hover:text-[var(--color-text)] hover:bg-[var(--color-layer-2)]"
           }`}
         >
-          {s.label}
+          {f.label}
         </button>
       ))}
     </div>

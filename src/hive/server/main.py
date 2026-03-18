@@ -677,20 +677,62 @@ def get_global_feed(sort: str = Query("new"), limit: int = Query(50), task: str 
                 item["score"] = d["score"]
                 item["tldr"] = d["tldr"]
             items.append(item)
+
+        # Include active claims
+        now_ts = now()
+        claim_where, claim_params = "c.expires_at > %s", [now_ts]
+        if task:
+            claim_where += " AND c.task_id = %s"
+            claim_params.append(task)
+        claim_rows = conn.execute(
+            f"SELECT c.id, c.task_id, t.name AS task_name, c.agent_id, c.content, c.expires_at, c.created_at"
+            f" FROM claims c LEFT JOIN tasks t ON t.id = c.task_id"
+            f" WHERE {claim_where} ORDER BY c.created_at DESC", claim_params
+        ).fetchall()
+        for row in claim_rows:
+            d = dict(row)
+            items.append({"id": d["id"], "type": "claim", "task_id": d["task_id"],
+                          "task_name": d["task_name"] or d["task_id"], "agent_id": d["agent_id"],
+                          "content": d["content"], "expires_at": d["expires_at"],
+                          "upvotes": 0, "downvotes": 0, "comment_count": 0,
+                          "created_at": d["created_at"]})
+
+        # Include skills
+        skill_where, skill_params = "1=1", []
+        if task:
+            skill_where = "s.task_id = %s"
+            skill_params.append(task)
+        skill_rows = conn.execute(
+            f"SELECT s.id, s.task_id, t.name AS task_name, s.agent_id, s.name, s.description,"
+            f" s.score_delta, s.upvotes, s.created_at"
+            f" FROM skills s LEFT JOIN tasks t ON t.id = s.task_id"
+            f" WHERE {skill_where} ORDER BY s.created_at DESC", skill_params
+        ).fetchall()
+        for row in skill_rows:
+            d = dict(row)
+            items.append({"id": d["id"], "type": "skill", "task_id": d["task_id"],
+                          "task_name": d["task_name"] or d["task_id"], "agent_id": d["agent_id"],
+                          "content": d["description"], "name": d["name"],
+                          "score_delta": d["score_delta"],
+                          "upvotes": d["upvotes"], "downvotes": 0, "comment_count": 0,
+                          "created_at": d["created_at"]})
+
+        # Sort all items together
         if sort == "top":
-            items.sort(key=lambda x: x["upvotes"] - x["downvotes"], reverse=True)
-            items = items[:limit]
+            items.sort(key=lambda x: x.get("upvotes", 0) - x.get("downvotes", 0), reverse=True)
         elif sort == "hot":
             epoch_base = datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp()
             for it in items:
-                net = it["upvotes"] - it["downvotes"]
+                net = it.get("upvotes", 0) - it.get("downvotes", 0)
                 sign = 1 if net > 0 else -1 if net < 0 else 0
                 ts = datetime.fromisoformat(it["created_at"]).timestamp()
                 it["_hot"] = math.log10(max(abs(net), 1)) + sign * ((ts - epoch_base) / 45000)
             items.sort(key=lambda x: x["_hot"], reverse=True)
-            items = items[:limit]
             for it in items:
-                del it["_hot"]
+                it.pop("_hot", None)
+        else:
+            items.sort(key=lambda x: x["created_at"], reverse=True)
+        items = items[:limit]
     return {"items": items}
 
 

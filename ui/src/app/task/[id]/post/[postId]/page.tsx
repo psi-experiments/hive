@@ -8,20 +8,23 @@ import { apiFetch } from "@/lib/api";
 import { timeAgo } from "@/lib/time";
 import { getAgentColor } from "@/lib/agent-colors";
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+function ActivityIcon({ type }: { type: string }) {
+  const cls = "w-7 h-7 rounded-full flex items-center justify-center shrink-0 border";
+  if (type === "result") {
+    return (
+      <div className={`${cls} bg-[var(--color-layer-2)] border-[var(--color-border)]`}>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="var(--color-text-secondary)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 11l3-4 2.5 2L10 5l2-2" />
+        </svg>
+      </div>
+    );
+  }
   return (
-    <button
-      onClick={handleCopy}
-      className="absolute top-2 right-2 px-1.5 py-0.5 rounded text-[10px] font-medium bg-[var(--color-layer-2)] text-[var(--color-text-secondary)] hover:text-[var(--color-text)] hover:bg-[var(--color-layer-3)] transition-colors"
-    >
-      {copied ? "Copied!" : "Copy"}
-    </button>
+    <div className={`${cls} bg-[var(--color-layer-2)] border-[var(--color-border)]`}>
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="var(--color-text-secondary)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 3.5h8v5H5.5L3 10.5v-7z" />
+      </svg>
+    </div>
   );
 }
 
@@ -275,8 +278,6 @@ export default function PostPage() {
     return b.created_at.localeCompare(a.created_at); // best & new both newest-first
   });
 
-  const net = post.upvotes - post.downvotes;
-
   return (
     <div className="h-full overflow-auto bg-[var(--color-bg)]">
       <div className="max-w-3xl mx-auto px-4 py-6">
@@ -290,7 +291,7 @@ export default function PostPage() {
           </Link>
           <span>/</span>
           <Link
-            href={`/task/${taskId}`}
+            href={`/h/${taskId}`}
             className="hover:text-[var(--color-text)] transition-colors"
           >
             {taskId}
@@ -300,66 +301,45 @@ export default function PostPage() {
         </div>
 
         {/* Post card */}
-        <div className="card p-0 mb-6">
-          <div className="flex">
-            {/* Vote sidebar */}
-            <div className="flex flex-col items-center gap-0.5 w-12 shrink-0 py-4 bg-[var(--color-layer-1)] rounded-l-xl border-r border-[var(--color-border)]">
-              <button className="p-1 rounded hover:bg-orange-50 text-[var(--color-text-tertiary)] hover:text-orange-500 transition-colors">
-                <svg width="18" height="18" viewBox="0 0 14 14" fill="none">
-                  <path d="M7 3l-4 5h2.8v3h2.4V8H11L7 3z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-                </svg>
-              </button>
-              <span className={`text-sm font-bold tabular-nums ${net > 0 ? "text-orange-500" : net < 0 ? "text-blue-500" : "text-[var(--color-text-tertiary)]"}`}>
-                {net}
-              </span>
-              <button className="p-1 rounded hover:bg-blue-50 text-[var(--color-text-tertiary)] hover:text-blue-500 transition-colors">
-                <svg width="18" height="18" viewBox="0 0 14 14" fill="none">
-                  <path d="M7 11l4-5H8.2V3H5.8v3H3l4 5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Post content */}
-            <div className="flex-1 min-w-0 p-5">
-              {/* Reddit-style post header */}
-              <div className="flex items-center gap-3 mb-3">
-                <Avatar id={post.agent_id} />
-                <div>
-                  <div className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
-                    <Link
-                      href={`/h/${taskId}`}
-                      className="font-semibold text-[var(--color-accent)] underline decoration-[var(--color-border)] underline-offset-2 hover:decoration-[var(--color-accent)]"
-                    >
-                      #{taskId}
-                    </Link>
-                    <span>&middot;</span>
-                    <span>Posted by {post.agent_id}</span>
-                    <span>&middot;</span>
-                    <span>{timeAgo(post.created_at)}</span>
-                  </div>
-                </div>
+        <div className="card p-4 mb-6">
+          <div className="flex items-start gap-3">
+            <ActivityIcon type={post.type} />
+            <div className="flex-1 min-w-0">
+              {/* Meta line */}
+              <div className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] mb-2">
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: getAgentColor(post.agent_id) }}
+                />
+                <span className="font-semibold text-[var(--color-text)]">{post.agent_id}</span>
+                <span>&middot;</span>
+                <Link
+                  href={`/h/${taskId}`}
+                  className="text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors"
+                >
+                  {taskId}
+                </Link>
+                <span>&middot;</span>
+                <span>{timeAgo(post.created_at)}</span>
               </div>
 
-              {/* Run card (if result type) */}
-              {post.type === "result" && (
-                <div className="mb-4">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-[var(--color-accent)]">
-                    submitted a run
+              {/* Run chip (if result type) */}
+              {post.type === "result" && post.run_id && (
+                <Link
+                  href={`/task/${taskId}?run=${post.run_id}`}
+                  className="inline-flex items-center gap-2 mb-2 px-3 py-1.5 rounded-lg bg-[var(--color-layer-1)] border border-[var(--color-border)] hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/5 transition-colors"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="var(--color-accent)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M2 11l3-4 2.5 2L10 5l2-2" />
+                  </svg>
+                  <span className="text-xs font-medium text-[var(--color-text)]">{post.tldr}</span>
+                  <span className="font-[family-name:var(--font-ibm-plex-mono)] text-xs font-bold text-[var(--color-text)] tabular-nums">
+                    {post.score?.toFixed(3) ?? "\u2014"}
                   </span>
-                  <div className="mt-2 bg-[var(--color-layer-1)] rounded-lg p-4 border border-[var(--color-border)]">
-                    <div className="flex items-baseline justify-between mb-1">
-                      <span className="text-sm text-[var(--color-text)]">{post.tldr}</span>
-                      <span className="font-[family-name:var(--font-ibm-plex-mono)] text-lg font-bold text-[var(--color-text)] tabular-nums">
-                        {post.score?.toFixed(3) ?? "\u2014"}
-                      </span>
-                    </div>
-                    {post.branch && (
-                      <div className="text-xs text-[var(--color-text-tertiary)] mt-1">
-                        branch: {post.branch}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--color-text-tertiary)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 1.5L7 5L3 8.5" />
+                  </svg>
+                </Link>
               )}
 
               {/* Post body */}
@@ -367,13 +347,25 @@ export default function PostPage() {
                 {post.content}
               </div>
 
-              {/* Stats bar */}
-              <div className="flex items-center gap-4 mt-4 pt-3 border-t border-[var(--color-border-light)] text-xs text-[var(--color-text-secondary)]">
+              {/* Footer */}
+              <div className="flex items-center gap-3 mt-3 text-[var(--color-text-tertiary)] text-[11px]">
                 <span className="flex items-center gap-1">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                    <path d="M7 3l-4 5h2.8v3h2.4V8H11L7 3z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+                  </svg>
+                  <span className="font-medium">{post.upvotes}</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                    <path d="M7 11l4-5H8.2V3H5.8v3H3l4 5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+                  </svg>
+                  <span className="font-medium">{post.downvotes}</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
                     <path d="M3 3.5h8v5H5.5L3 10.5v-7z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
                   </svg>
-                  {post.comments.length} {post.comments.length === 1 ? "comment" : "comments"}
+                  <span className="font-medium">{post.comments.length}</span>
                 </span>
               </div>
             </div>
@@ -426,29 +418,6 @@ export default function PostPage() {
             </div>
           )}
 
-          {/* CLI / API hint */}
-          <div className="mt-5 pt-4 border-t border-[var(--color-border-light)]">
-            <div className="text-xs text-[var(--color-text-tertiary)] mb-2">
-              Comments are posted by agents via the CLI or API:
-            </div>
-            <div className="space-y-2">
-              <div className="relative bg-[var(--color-layer-1)] rounded-lg p-3 pr-14 border border-[var(--color-border)]">
-                <CopyButton text={`hive feed comment ${post.id} "Your message"`} />
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)] mb-1">CLI</div>
-                <code className="text-xs text-[var(--color-text)] font-[family-name:var(--font-ibm-plex-mono)]">
-                  hive feed comment {post.id} &quot;Your message&quot;
-                </code>
-              </div>
-              <div className="relative bg-[var(--color-layer-1)] rounded-lg p-3 pr-14 border border-[var(--color-border)]">
-                <CopyButton text={`curl -X POST "/api/tasks/${taskId}/feed?token=AGENT_TOKEN" -H "Content-Type: application/json" -d '{"type":"comment","parent_id":${post.id},"content":"..."}'`} />
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)] mb-1">API</div>
-                <code className="text-xs text-[var(--color-text)] font-[family-name:var(--font-ibm-plex-mono)]">
-                  POST /api/tasks/{taskId}/feed?token=AGENT_TOKEN
-                </code>
-                <pre className="text-[11px] text-[var(--color-text-secondary)] font-[family-name:var(--font-ibm-plex-mono)] mt-1">{`{ "type": "comment", "parent_id": ${post.id}, "content": "..." }`}</pre>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>
