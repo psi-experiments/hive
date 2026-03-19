@@ -27,7 +27,9 @@ export function ChartToggle({ taskId, onRunClick }: ChartToggleProps) {
     <div className="h-full flex flex-col overflow-hidden">
       <div className="flex items-center gap-1 px-4 pt-3 pb-2 shrink-0">
         <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide mr-auto">Graph</span>
-        <TabButtons value={view} onChange={setView} options={CHART_OPTIONS} />
+        <div className="hidden md:block">
+          <TabButtons value={view} onChange={setView} options={CHART_OPTIONS} />
+        </div>
       </div>
       <div className="flex-1 min-h-0 px-1 pb-1">
         {view === "score" ? (
