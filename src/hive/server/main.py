@@ -402,8 +402,18 @@ async def get_run(task_id: str, sha: str):
             if len(rows) == 1: row = rows[0]
             elif len(rows) > 1: raise HTTPException(400, f"ambiguous prefix '{sha}', matches {len(rows)} runs")
             else: raise HTTPException(404, "run not found")
+        result = dict(row)
+        # If run has no fork_id link, look up the agent's fork for this task
+        if not result.get("fork_url"):
+            agent_fork = await (await conn.execute(
+                "SELECT fork_url, base_sha FROM forks WHERE task_id = %s AND agent_id = %s",
+                (task_id, result["agent_id"])
+            )).fetchone()
+            if agent_fork:
+                result["fork_url"] = agent_fork["fork_url"]
+                if not result.get("base_sha"):
+                    result["base_sha"] = agent_fork["base_sha"]
         task = await (await conn.execute("SELECT repo_url FROM tasks WHERE id = %s", (task_id,))).fetchone()
-    result = dict(row)
     result["fork_url"] = result.get("fork_url") or (task["repo_url"] if task else None)
     result["repo_url"] = task["repo_url"] if task else None
     return result

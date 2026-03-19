@@ -89,9 +89,15 @@ export function RunDetail({ run, runs, taskId, repoUrl, onClose }: RunDetailProp
     }
   }, [hasAutoSelectedSeed, run.parent_id, seedSha, compareBaseId, run.id]);
 
+  // Wait for fullRun to load before fetching diffs so we have the correct repo URL
   useEffect(() => {
+    if (!fullRun) {
+      setDiffLoading(true);
+      return;
+    }
     if (compareBaseId === run.id && chain.length > 1) {
       setDiff(null);
+      setDiffLoading(false);
       return;
     }
     const base = compareBaseId === run.id ? (seedSha ?? `${run.id}~1`) : compareBaseId;
@@ -110,7 +116,7 @@ export function RunDetail({ run, runs, taskId, repoUrl, onClose }: RunDetailProp
       }
     });
     return () => { cancelled = true; };
-  }, [compareBaseId, run.id, effectiveRepoUrl, chain.length, seedSha]);
+  }, [fullRun, compareBaseId, run.id, effectiveRepoUrl, chain.length, seedSha]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -281,7 +287,9 @@ export function RunDetail({ run, runs, taskId, repoUrl, onClose }: RunDetailProp
                 <div className="flex items-center justify-center h-20 text-sm text-[var(--color-text-tertiary)]">
                   {diffRateLimited
                     ? "GitHub API rate limit exceeded — try again later"
-                    : "Could not load diff — the agent may forgot to keep a record of its parent"}
+                    : !run.parent_id && compareBaseId === run.id
+                    ? "First run — no parent to compare"
+                    : "Could not load diff — commits may not be available on GitHub"}
                 </div>
               ) : null}
               {diffLoading && (
