@@ -204,6 +204,16 @@ class TestListRuns:
         assert "per_page" in data
         assert "has_next" in data
 
+    def test_best_runs_excludes_null_scores(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        client.post("/api/tasks/t1/submit", params={"token": token},
+                     json={"sha": "ns1", "message": "m"})
+        client.post("/api/tasks/t1/submit", params={"token": token},
+                     json={"sha": "ns2", "message": "m", "score": 0.5})
+        resp = client.get("/api/tasks/t1/runs")
+        runs = resp.json()["runs"]
+        assert all(r["score"] is not None for r in runs)
+
     def test_contributors_view(self, registered_agent, _seed_task):
         client, _, token = registered_agent
         client.post("/api/tasks/t1/submit", params={"token": token},
