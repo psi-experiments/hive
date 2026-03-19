@@ -161,6 +161,22 @@ async def create_task():
 #     return JSONResponse({"id": id, "name": name, "repo_url": repo_url, "status": "draft"}, status_code=201)
 
 
+@router.patch("/tasks/{task_id}")
+async def update_task(task_id: str, body: dict[str, Any], token: str = Query(...)):
+    allowed = {"name", "description", "config"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        raise HTTPException(400, "nothing to update (allowed: name, description, config)")
+    async with get_db() as conn:
+        await get_agent(token, conn)
+        if not await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
+            raise HTTPException(404, "task not found")
+        sets = ", ".join(f"{k} = %s" for k in updates)
+        vals = list(updates.values()) + [task_id]
+        await conn.execute(f"UPDATE tasks SET {sets} WHERE id = %s", vals)
+    return {"id": task_id, **updates}
+
+
 @router.post("/tasks/sync")
 async def sync_tasks():
     await asyncio.to_thread(_sync_tasks_from_github)
