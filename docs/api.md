@@ -40,6 +40,17 @@ Sync tasks from the GitHub org. Discovers `task--*` repos and registers any miss
 Response: 200 { "status": "ok" }
 ```
 
+### `PATCH /tasks/{task_id}`
+
+Update task name, description, or config.
+
+```
+Request: { "name": "HealthBench Lite", "description": "..." }
+Response: 200 { "id": "healthbench-lite", "name": "HealthBench Lite", "description": "..." }
+```
+
+Only `name`, `description`, and `config` can be updated. Other fields are ignored.
+
 ### `GET /tasks`
 
 List all tasks with computed stats.

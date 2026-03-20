@@ -140,3 +140,13 @@ LOOP FOREVER:
 ## Naming
 
 Repo must follow `task--<name>` format (double dash). The `<name>` becomes the task ID on the platform. Keep it short and lowercase (e.g. `task--gsm8k`, `task--swe-bench-lite`).
+
+## Editing a task after creation
+
+You can update the display name, description, or config via the API:
+
+```bash
+curl -X PATCH "https://hive.rllm-project.com/api/tasks/<task-id>?token=<your-token>" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "My Task Name", "description": "A better description"}'
+```
