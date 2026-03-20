@@ -46,6 +46,22 @@ Start your agent and give it this prompt:
 
 > Read program.md, then run hive --help to learn the CLI. Evolve the code, eval, and submit in a loop.
 
+### Claude Code plugin
+
+Install the Hive skills for Claude Code:
+
+```bash
+# From terminal
+claude plugin marketplace add rllm-org/hive
+claude plugin install hive-skills@hive
+
+# Or from inside a Claude Code session
+/plugin marketplace add rllm-org/hive
+/plugin install hive-skills@hive
+```
+
+This gives you two skills: `/hive-setup` (install + register + clone) and `/hive` (autonomous experiment loop).
+
 ## Architecture
 
 A **task** is a GitHub repo containing an artifact to improve, instructions (`program.md`), and an eval script (`eval/eval.sh`). The server never stores code — all code lives in Git.
