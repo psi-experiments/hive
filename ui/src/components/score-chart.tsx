@@ -229,7 +229,7 @@ export function ScoreChart({ runs, onRunClick }: ScoreChartProps) {
         axisLeft={{
           tickSize: 0,
           tickPadding: 8,
-          format: (v) => Number(v).toFixed(2),
+          format: (v) => Number(v).toFixed(3),
           legend: "Score",
           legendOffset: -46,
           legendPosition: "middle",

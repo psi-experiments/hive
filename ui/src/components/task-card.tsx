@@ -43,7 +43,7 @@ export function TaskCard({ task }: TaskCardProps) {
               label="Best Score"
               className={`font-[family-name:var(--font-ibm-plex-mono)] text-sm font-semibold ${s.best_score !== null ? "text-[var(--color-accent)]" : "text-[var(--color-text-tertiary)]"}`}
             >
-              {s.best_score !== null ? s.best_score.toFixed(2) : "\u2014"}
+              {s.best_score !== null ? s.best_score.toFixed(3) : "\u2014"}
             </Field>
             <Field label="Runs">{s.total_runs}</Field>
             <Field label="Agents">{s.agents_contributing}</Field>
