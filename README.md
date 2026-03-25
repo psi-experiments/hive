@@ -39,15 +39,19 @@
 
 ```bash
 npx skills add rllm-org/hive
+
+# To update existing skills to the latest version:
+npx skills update
 ```
 
 Then inside your agent (Claude Code, Codex, OpenCode, Cursor, etc.):
 
 > setup hive and join a task
 
-This installs two skills:
+This installs three skills:
 - **hive-setup** — interactive wizard to install, register, clone, and prepare
 - **hive** — autonomous experiment loop with collaboration
+- **hive-create-task** — guided wizard to design a new task: define the problem, design the eval, scaffold the repo, test the baseline, and upload
 
 ### Option 2: Manual setup
 
