@@ -351,11 +351,20 @@ async def create_task(
     name: str = Form(...),
     description: str = Form(...),
     config: str | None = Form(None),
-    x_admin_key: str = Header(""), authorization: str = Header(""),
+    x_admin_key: str = Header(""),
+    authorization: str = Header(""),
 ):
+    """Create the backing GitHub repo for a task draft."""
+
     require_admin(x_admin_key, authorization)
     _validate_task_id(id)
     _validate_task_description(description)
+    normalized_config = config
+    if config is not None:
+        try:
+            normalized_config, _, _ = normalize_task_config(config)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
     async with get_db() as conn:
         if await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (id,))).fetchone():
             raise HTTPException(409, f"task '{id}' already exists")
@@ -370,14 +379,14 @@ async def create_task(
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO tasks (id, name, description, repo_url, config, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
-            (id, name, description, repo_url, config, now()),
+            (id, name, description, repo_url, normalized_config, now()),
         )
     return JSONResponse({"id": id, "name": name, "repo_url": repo_url, "status": "active"}, status_code=201)
 
 
 @router.patch("/tasks/{task_id}")
 async def update_task(task_id: str, body: dict[str, Any], token: str = Query(...),
-                      x_admin_key: str = Header("")):
+                      x_admin_key: str = Header(""), authorization: str = Header("")):
     """Update task metadata, validating verification config changes up front."""
 
     allowed = {"name", "description", "config"}
@@ -387,7 +396,7 @@ async def update_task(task_id: str, body: dict[str, Any], token: str = Query(...
     # Updating config (controls verification behavior) requires admin.
     verification = None
     if "config" in updates:
-        require_admin(x_admin_key)
+        require_admin(x_admin_key, authorization)
         try:
             updates["config"], _, verification = normalize_task_config(updates["config"])
         except ValueError as exc:
@@ -408,6 +417,8 @@ async def update_task(task_id: str, body: dict[str, Any], token: str = Query(...
 
 @router.post("/tasks/sync")
 async def sync_tasks(x_admin_key: str = Header(""), authorization: str = Header("")):
+    """Refresh task metadata from GitHub into the local database."""
+
     require_admin(x_admin_key, authorization)
     await asyncio.to_thread(_sync_tasks_from_github)
     return {"status": "ok"}
@@ -449,6 +460,8 @@ async def list_tasks(q: str | None = Query(None), page: int = Query(1), per_page
 
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: str):
+    """Return one task with normalized config and aggregate stats."""
+
     async with get_db() as conn:
         t, _ = await _load_task_or_404(conn, task_id)
         if t.get("config"):
@@ -685,6 +698,8 @@ async def get_run(task_id: str, sha: str):
 @router.patch("/tasks/{task_id}/runs/{sha}")
 async def patch_run(task_id: str, sha: str, body: dict[str, Any],
                     x_admin_key: str = Header(""), authorization: str = Header("")):
+    """Update admin-only run flags and recompute official task stats."""
+
     require_admin(x_admin_key, authorization)
     async with get_db() as conn:
         _, verification = await _load_task_or_404(conn, task_id)
@@ -702,14 +717,15 @@ async def patch_run(task_id: str, sha: str, body: dict[str, Any],
         if "valid" in body:
             valid = bool(body["valid"])
             await conn.execute("UPDATE runs SET valid = %s WHERE id = %s", (valid, sha))
+            # Validity affects leaderboard eligibility for both reported and verified tasks.
             await recompute_task_stats(conn, task_id, verification)
         return {"id": sha, "valid": body.get("valid")}
 
 
 @router.post("/tasks/{task_id}/runs/{sha}/verify")
-async def trigger_verify(task_id: str, sha: str, x_admin_key: str = Header(...)):
+async def trigger_verify(task_id: str, sha: str, x_admin_key: str = Header(""), authorization: str = Header("")):
     """Admin-only. Queue or re-queue a run for server-side verification."""
-    require_admin(x_admin_key)
+    require_admin(x_admin_key, authorization)
     async with get_db() as conn:
         _, verification = await _load_task_or_404(conn, task_id)
         if not verification.enabled:
@@ -733,6 +749,8 @@ async def trigger_verify(task_id: str, sha: str, x_admin_key: str = Header(...))
             raise HTTPException(400, "run has no fork and cannot be verified")
         if status == STATUS_RUNNING:
             raise HTTPException(409, "run is currently being verified, cannot re-queue")
+        # Re-queueing must clear the previous verifier result so official stats do not
+        # keep pointing at stale success/failure state while the worker reruns the job.
         await conn.execute(
             "UPDATE runs SET verification_status = %s, verified = FALSE,"
             " verified_score = NULL, verification_log = NULL, verified_at = NULL,"

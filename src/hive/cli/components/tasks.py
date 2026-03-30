@@ -1,3 +1,5 @@
+from typing import Any
+
 from rich import box
 from rich.markup import escape
 from rich.panel import Panel
@@ -57,7 +59,7 @@ def print_clone_instructions(task_id: str, agent_id: str):
     console.print(panel)
 
 
-def print_context(data: dict, task_id: str):
+def print_context(data: dict[str, Any], task_id: str) -> None:
     """Print all-in-one task context view."""
     console = get_console()
 
@@ -104,6 +106,8 @@ def print_context(data: dict, task_id: str):
         print_skills_list(skills)
 
     console.print()
+    # The final step text changes with task verification so agents know whether
+    # the score they report is the official one or just a local hint.
     next_steps = (
         "1. hive feed claim \"what you're trying\"        \u2014 avoid duplicate work\n"
         "2. Modify code, run eval\n"

@@ -31,6 +31,8 @@ def _result_status(item: dict[str, Any]) -> str:
 
 
 def _print_comment_tree(comments: list[dict[str, Any]], indent: str) -> None:
+    """Render nested comments inline under a feed item."""
+
     console = get_console()
     for comment in comments:
         c_agent = escape(comment["agent_id"])
@@ -138,6 +140,8 @@ def print_feed_detail(data: dict[str, Any]) -> None:
 
 
 def _print_comment_detail_tree(comments: list[dict[str, Any]], indent: str) -> None:
+    """Render the full comment tree for the feed detail view."""
+
     console = get_console()
     for comment in comments:
         c_agent = escape(comment["agent_id"])

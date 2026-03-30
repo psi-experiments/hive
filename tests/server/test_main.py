@@ -190,12 +190,25 @@ def _make_tar(files: dict[str, str] = None) -> io.BytesIO:
     return buf
 
 
-def _post_task(client, id="gsm8k", name="GSM8K Solver", description="A solver task", config=None):
+def _post_task(
+    client,
+    id: str = "gsm8k",
+    name: str = "GSM8K Solver",
+    description: str = "A solver task",
+    config: object | None = None,
+    headers: dict[str, str] | None = None,
+):
+    """Create a task upload request, optionally with admin headers."""
+
     data = {"id": id, "name": name, "description": description}
     if config:
         data["config"] = config
-    return client.post("/api/tasks", data=data, files={"archive": ("task.tar.gz", _make_tar(), "application/gzip")},
-                       headers={"X-Admin-Key": "test-key"})
+    return client.post(
+        "/api/tasks",
+        data=data,
+        files={"archive": ("task.tar.gz", _make_tar(), "application/gzip")},
+        headers=headers or {"X-Admin-Key": "test-key"},
+    )
 
 
 def _insert_task(task_id="t1", name="Test Task", description="A test", config=None):
@@ -216,22 +229,28 @@ def _insert_task(task_id="t1", name="Test Task", description="A test", config=No
         )
 
 
+def _admin_headers(monkeypatch, key="test-key"):
+    monkeypatch.setattr("hive.server.main.ADMIN_KEY", key)
+    return {"X-Admin-Key": key}
+
+
 class TestCreateTask:
-    def test_create(self, client):
-        resp = _post_task(client)
+    def test_create(self, client, monkeypatch):
+        resp = _post_task(client, headers=_admin_headers(monkeypatch))
         assert resp.status_code == 201
         assert resp.json()["id"] == "gsm8k"
         assert resp.json()["repo_url"] == "https://github.com/hive-agents/task--gsm8k"
         assert resp.json()["status"] == "active"
 
-    def test_description_too_long(self, client):
-        resp = _post_task(client, description="x" * 351)
+    def test_description_too_long(self, client, monkeypatch):
+        resp = _post_task(client, description="x" * 351, headers=_admin_headers(monkeypatch))
         assert resp.status_code == 400
         assert "350" in resp.json()["detail"]
 
-    def test_duplicate_task(self, client):
-        _post_task(client, id="t1", name="T", description="D")
-        resp = _post_task(client, id="t1", name="T", description="D")
+    def test_duplicate_task(self, client, monkeypatch):
+        headers = _admin_headers(monkeypatch)
+        _post_task(client, id="t1", name="T", description="D", headers=headers)
+        resp = _post_task(client, id="t1", name="T", description="D", headers=headers)
         assert resp.status_code == 409
 
     def test_missing_fields(self, client):
@@ -296,6 +315,85 @@ class TestGetTask:
     def test_not_found(self, client):
         resp = client.get("/api/tasks/nope")
         assert resp.status_code == 404
+
+
+class TestPatchTask:
+    def test_updates_name_and_description_without_admin(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        resp = client.patch(
+            "/api/tasks/t1",
+            params={"token": token},
+            json={"name": "Updated Task", "description": "Updated description"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "Updated Task"
+        assert resp.json()["description"] == "Updated description"
+
+        task = client.get("/api/tasks/t1").json()
+        assert task["name"] == "Updated Task"
+        assert task["description"] == "Updated description"
+
+    def test_config_update_requires_admin(self, registered_agent, _seed_task):
+        client, _, token = registered_agent
+        resp = client.patch(
+            "/api/tasks/t1",
+            params={"token": token},
+            json={"config": {"verify": True, "mutable_paths": ["agent.py"]}},
+        )
+        assert resp.status_code == 403
+
+    @pytest.mark.parametrize(
+        ("config", "detail_substr"),
+        [
+            ("{", "valid json"),
+            ("[]", "json object"),
+            ({"verify": "yes", "mutable_paths": ["agent.py"]}, "boolean"),
+            ({"verify": True}, "mutable_paths"),
+            ({"verify": True, "mutable_paths": ["../agent.py"]}, "mutable_paths"),
+            ({"verify": True, "mutable_paths": ["agent.py"], "eval_timeout": 0}, "positive integer"),
+        ],
+    )
+    def test_config_update_rejects_invalid_values(self, registered_agent, _seed_task, monkeypatch, config, detail_substr):
+        client, _, token = registered_agent
+        resp = client.patch(
+            "/api/tasks/t1",
+            params={"token": token},
+            headers=_admin_headers(monkeypatch),
+            json={"config": config},
+        )
+        assert resp.status_code == 400
+        assert detail_substr in resp.json()["detail"].lower()
+
+    def test_config_update_normalizes_valid_values(self, registered_agent, _seed_task, monkeypatch):
+        client, _, token = registered_agent
+        resp = client.patch(
+            "/api/tasks/t1",
+            params={"token": token},
+            headers=_admin_headers(monkeypatch),
+            json={
+                "config": {
+                    "verify": True,
+                    "mutable_paths": ["agent.py/", "prompts//", "agent.py"],
+                    "prepare_timeout": 30,
+                    "eval_timeout": 60,
+                }
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["config"] == {
+            "verify": True,
+            "mutable_paths": ["agent.py", "prompts"],
+            "prepare_timeout": 30,
+            "eval_timeout": 60,
+        }
+
+        task = client.get("/api/tasks/t1").json()
+        assert task["config"] == {
+            "verify": True,
+            "mutable_paths": ["agent.py", "prompts"],
+            "prepare_timeout": 30,
+            "eval_timeout": 60,
+        }
 
 
 class TestSubmitRun:
@@ -572,6 +670,57 @@ class TestGetRun:
         assert resp.json()["fork_url"] == "https://github.com/test/test"
 
 
+class TestPatchRun:
+    def test_invalidating_verified_run_recomputes_task_stats(self, registered_agent, monkeypatch, mock_github):
+        from hive.server.db import get_db_sync
+
+        client, _, token = registered_agent
+        headers = _admin_headers(monkeypatch)
+        _insert_task("tv-patch", config={"verify": True, "mutable_paths": ["agent.py"]})
+        client.post("/api/tasks/tv-patch/clone", params={"token": token})
+        client.post(
+            "/api/tasks/tv-patch/submit",
+            params={"token": token},
+            json={"sha": "patchlow1", "message": "m", "score": 0.4},
+        )
+        client.post(
+            "/api/tasks/tv-patch/submit",
+            params={"token": token},
+            json={"sha": "patchhigh1", "message": "m", "score": 0.9},
+        )
+
+        with get_db_sync() as conn:
+            conn.execute(
+                "UPDATE runs SET verified = TRUE, verified_score = 0.4, verification_status = 'success'"
+                " WHERE id = %s",
+                ("patchlow1",),
+            )
+            conn.execute(
+                "UPDATE runs SET verified = TRUE, verified_score = 0.9, verification_status = 'success'"
+                " WHERE id = %s",
+                ("patchhigh1",),
+            )
+            conn.execute(
+                "UPDATE tasks SET best_score = 0.9, improvements = 2 WHERE id = %s",
+                ("tv-patch",),
+            )
+
+        resp = client.patch(
+            "/api/tasks/tv-patch/runs/patchhigh1",
+            headers=headers,
+            json={"valid": False},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"id": "patchhigh1", "valid": False}
+
+        task = client.get("/api/tasks/tv-patch").json()
+        assert task["stats"]["best_score"] == 0.4
+        assert task["stats"]["improvements"] == 1
+
+        verified_runs = client.get("/api/tasks/tv-patch/runs", params={"verified_only": True}).json()["runs"]
+        assert [run["id"] for run in verified_runs] == ["patchlow1"]
+
+
 class TestFeed:
     def test_post_and_read(self, registered_agent, _seed_task):
         client, _, token = registered_agent
@@ -800,52 +949,54 @@ class TestCommentVote:
 
 
 class TestDeleteRun:
-    _admin = {"X-Admin-Key": "test-key"}
-
-    def test_delete_single_run(self, registered_agent, _seed_task):
+    def test_delete_single_run(self, registered_agent, _seed_task, monkeypatch):
         client, _, token = registered_agent
+        headers = _admin_headers(monkeypatch)
         client.post("/api/tasks/t1/submit", params={"token": token},
                     json={"sha": "del1", "message": "to delete", "score": 0.5})
-        resp = client.delete("/api/tasks/t1/runs/del1", headers=self._admin)
+        resp = client.delete("/api/tasks/t1/runs/del1", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["deleted"] == "del1"
         # Run should be gone
         assert client.get("/api/tasks/t1/runs/del1").status_code == 404
 
-    def test_delete_run_clears_post_and_comments(self, registered_agent, _seed_task):
+    def test_delete_run_clears_post_and_comments(self, registered_agent, _seed_task, monkeypatch):
         client, _, token = registered_agent
+        headers = _admin_headers(monkeypatch)
         resp = client.post("/api/tasks/t1/submit", params={"token": token},
                            json={"sha": "del2", "message": "has comments", "score": 0.5})
         post_id = resp.json()["post_id"]
         client.post("/api/tasks/t1/feed", params={"token": token},
                     json={"type": "comment", "parent_id": post_id, "content": "nice"})
         # Delete the run
-        client.delete("/api/tasks/t1/runs/del2", headers=self._admin)
+        client.delete("/api/tasks/t1/runs/del2", headers=headers)
         # Post should be gone
         assert client.get(f"/api/tasks/t1/feed/{post_id}").status_code == 404
 
-    def test_delete_run_updates_best_score(self, registered_agent, _seed_task):
+    def test_delete_run_updates_best_score(self, registered_agent, _seed_task, monkeypatch):
         client, _, token = registered_agent
+        headers = _admin_headers(monkeypatch)
         client.post("/api/tasks/t1/submit", params={"token": token},
                     json={"sha": "lo1", "message": "low", "score": 0.3})
         client.post("/api/tasks/t1/submit", params={"token": token},
                     json={"sha": "hi1", "message": "high", "score": 0.9})
         # Delete the high scorer
-        client.delete("/api/tasks/t1/runs/hi1", headers=self._admin)
+        client.delete("/api/tasks/t1/runs/hi1", headers=headers)
         task = client.get("/api/tasks/t1").json()
         assert task["stats"]["best_score"] == 0.3
 
-    def test_delete_nonexistent_run(self, registered_agent, _seed_task):
+    def test_delete_nonexistent_run(self, registered_agent, _seed_task, monkeypatch):
         client, _, token = registered_agent
-        resp = client.delete("/api/tasks/t1/runs/nope", headers=self._admin)
+        resp = client.delete("/api/tasks/t1/runs/nope", headers=_admin_headers(monkeypatch))
         assert resp.status_code == 404
 
-    def test_delete_all_runs(self, registered_agent, _seed_task):
+    def test_delete_all_runs(self, registered_agent, _seed_task, monkeypatch):
         client, _, token = registered_agent
+        headers = _admin_headers(monkeypatch)
         for i in range(3):
             client.post("/api/tasks/t1/submit", params={"token": token},
                         json={"sha": f"all{i}", "message": "m", "score": 0.1 * i})
-        resp = client.delete("/api/tasks/t1/runs", headers=self._admin)
+        resp = client.delete("/api/tasks/t1/runs", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["deleted"] == 3
         # Runs should be empty
@@ -856,10 +1007,51 @@ class TestDeleteRun:
         assert task["stats"]["best_score"] is None
         assert task["stats"]["improvements"] == 0
 
-    def test_delete_all_runs_task_not_found(self, registered_agent):
+    def test_delete_all_runs_task_not_found(self, registered_agent, monkeypatch):
         client, _, token = registered_agent
-        resp = client.delete("/api/tasks/nope/runs", headers=self._admin)
+        resp = client.delete("/api/tasks/nope/runs", headers=_admin_headers(monkeypatch))
         assert resp.status_code == 404
+
+    def test_delete_verified_run_recomputes_official_stats(self, registered_agent, monkeypatch, mock_github):
+        from hive.server.db import get_db_sync
+
+        client, _, token = registered_agent
+        headers = _admin_headers(monkeypatch)
+        _insert_task("tv-delete", config={"verify": True, "mutable_paths": ["agent.py"]})
+        client.post("/api/tasks/tv-delete/clone", params={"token": token})
+        client.post(
+            "/api/tasks/tv-delete/submit",
+            params={"token": token},
+            json={"sha": "delow1", "message": "m", "score": 0.4},
+        )
+        client.post(
+            "/api/tasks/tv-delete/submit",
+            params={"token": token},
+            json={"sha": "dehigh1", "message": "m", "score": 0.9},
+        )
+
+        with get_db_sync() as conn:
+            conn.execute(
+                "UPDATE runs SET verified = TRUE, verified_score = 0.4, verification_status = 'success'"
+                " WHERE id = %s",
+                ("delow1",),
+            )
+            conn.execute(
+                "UPDATE runs SET verified = TRUE, verified_score = 0.9, verification_status = 'success'"
+                " WHERE id = %s",
+                ("dehigh1",),
+            )
+            conn.execute(
+                "UPDATE tasks SET best_score = 0.9, improvements = 2 WHERE id = %s",
+                ("tv-delete",),
+            )
+
+        resp = client.delete("/api/tasks/tv-delete/runs/dehigh1", headers=headers)
+        assert resp.status_code == 200
+
+        task = client.get("/api/tasks/tv-delete").json()
+        assert task["stats"]["best_score"] == 0.4
+        assert task["stats"]["improvements"] == 1
 
 
 class TestDeleteTask:

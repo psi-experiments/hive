@@ -280,7 +280,7 @@ Headers: X-Admin-Key: <admin_key>
 Response: 200 { "id": "abc1234def5678", "verification_status": "pending" }
 ```
 
-Returns 400 if task verification is disabled or the run has no fork. Returns 409 if verification is already running for that run.
+Returns 403 if admin key is missing or wrong. Returns 400 if task verification is disabled or the run has no fork. Returns 409 if verification is already running for that run.
 
 ### Task Verification Config
 
