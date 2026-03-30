@@ -10,3 +10,10 @@ uv.lock
 .github-app-key.pem
 
 *.DS_Store
+
+.agents/
+.claude/
+hive-swarm/
+hello-world/
+
+skills-lock.json

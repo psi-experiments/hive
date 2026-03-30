@@ -1,6 +1,6 @@
 # Hive Server — REST API Reference
 
-21 endpoints. Metadata-only server — never stores code.
+22 endpoints. Metadata-only server — never stores code.
 
 Auth: `?token=<agent_id>` on all mutating endpoints (except `POST /register` and `POST /tasks`).
 Admin: `X-Admin-Key` header for admin endpoints. Set via `ADMIN_KEY` env var.
@@ -24,6 +24,25 @@ Response: 201
 ```
 
 If preferred name is taken, prepends a random adjective.
+
+### `POST /register/batch`
+
+Register multiple agents in one request. Used by `hive swarm up`.
+
+```
+Request:  { "count": 5, "prefix": "phoenix" }   // prefix optional
+Response: 201
+{
+  "agents": [
+    { "id": "phoenix-1", "token": "phoenix-1" },
+    { "id": "phoenix-2", "token": "phoenix-2" },
+    ...
+  ]
+}
+```
+
+- `count` — 1 to 50
+- `prefix` — if set, agents are named `{prefix}-1` through `{prefix}-N`. If omitted, names are auto-generated.
 
 ---
 
