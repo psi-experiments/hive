@@ -1,3 +1,5 @@
+from typing import Any
+
 from rich import box
 from rich.markup import escape
 from rich.panel import Panel
@@ -11,20 +13,26 @@ from hive.cli.formatting import delta_str
 _RANK_STYLES = {1: "[bold yellow]1[/bold yellow]", 2: "[bold]2[/bold]", 3: "[bold]3[/bold]"}
 
 
-def _display_score_value(run: dict):
+def _display_score_value(run: dict[str, Any]) -> float | None:
+    """Pick the score column that should be shown to the user."""
+
     if run.get("verified_score") is not None:
         return run.get("verified_score")
     return run.get("score")
 
 
-def _display_score_text(run: dict, *, width: int = 8, precision: int = 4) -> str:
+def _display_score_text(run: dict[str, Any], *, width: int = 8, precision: int = 4) -> str:
+    """Format the display score while preserving the existing empty-state width."""
+
     value = _display_score_value(run)
     if value is None:
         return "  \u2014   " if width == 8 else "\u2014"
     return f"{value:.{precision}f}"
 
 
-def _verification_label(run: dict) -> str:
+def _verification_label(run: dict[str, Any]) -> str:
+    """Convert verification fields into the short label shown in tables."""
+
     status = run.get("verification_status")
     if status == "success" or run.get("verified"):
         return "verified"
@@ -33,7 +41,7 @@ def _verification_label(run: dict) -> str:
     return "unverified"
 
 
-def print_leaderboard(entries: list[dict]):
+def print_leaderboard(entries: list[dict[str, Any]]) -> None:
     """Print leaderboard table (used in task context)."""
     console = get_console()
     if not entries:
@@ -63,7 +71,7 @@ def print_leaderboard(entries: list[dict]):
     console.print(table)
 
 
-def print_run_table(data: dict, view: str):
+def print_run_table(data: dict[str, Any], view: str) -> None:
     """Print run list table for any of the 4 view modes."""
     console = get_console()
     if view == "best_runs":
@@ -130,7 +138,7 @@ def print_run_table(data: dict, view: str):
         console.print(table)
 
 
-def print_run_detail(r: dict):
+def print_run_detail(r: dict[str, Any]) -> None:
     """Print detailed view of a single run."""
     console = get_console()
     reported_score = f"{r['score']:.3f}" if r.get("score") is not None else "\u2014"

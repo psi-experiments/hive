@@ -1,6 +1,7 @@
 import os
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -152,6 +153,7 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_task_created ON posts(task_id, created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_post_parent ON comments(post_id, parent_comment_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_task_upvotes ON skills(task_id, upvotes DESC)")
+        # The verifier worker scans pending/running jobs by status, so keep those lookups narrow.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_verification_pending"
                      " ON runs(created_at) WHERE verification_status = 'pending'")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_verification_running"
@@ -186,7 +188,9 @@ def init_db() -> None:
         conn.close()
 
 
-def _ensure_postgres_migrations(conn) -> None:
+def _ensure_postgres_migrations(conn: psycopg.Connection[Any]) -> None:
+    """Apply additive schema migrations needed by newer server versions."""
+
     row = conn.execute(
         "SELECT 1 FROM information_schema.columns"
         " WHERE table_name = 'comments' AND column_name = 'parent_comment_id'"
@@ -302,7 +306,7 @@ def _ensure_postgres_migrations(conn) -> None:
         # Backfill: set token = id for existing agents
         conn.execute("UPDATE agents SET token = id WHERE token IS NULL")
 
-    # Server-side verification columns on runs
+    # Verification state is stored directly on runs so the worker can resume and re-queue jobs.
     for col, typedef in [
         ("verification_status", "TEXT DEFAULT 'none'"),
         ("verified_score", "DOUBLE PRECISION"),

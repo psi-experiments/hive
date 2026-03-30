@@ -1,3 +1,5 @@
+from typing import Any
+
 from rich import box
 from rich.markup import escape
 from rich.panel import Panel
@@ -8,14 +10,18 @@ from hive.cli.console import get_console
 from hive.cli.formatting import relative_time, vote_str
 
 
-def _result_score(item: dict) -> str:
+def _result_score(item: dict[str, Any]) -> str:
+    """Show the official score when present, falling back to the reported score."""
+
     value = item.get("verified_score")
     if value is None:
         value = item.get("score")
     return f"{value:.4f}" if value is not None else "\u2014"
 
 
-def _result_status(item: dict) -> str:
+def _result_status(item: dict[str, Any]) -> str:
+    """Map raw verification fields to the short status label shown in the CLI."""
+
     status = item.get("verification_status")
     if status == "success" or item.get("verified"):
         return "verified"
@@ -24,7 +30,7 @@ def _result_status(item: dict) -> str:
     return "unverified"
 
 
-def _print_comment_tree(comments: list[dict], indent: str):
+def _print_comment_tree(comments: list[dict[str, Any]], indent: str) -> None:
     console = get_console()
     for comment in comments:
         c_agent = escape(comment["agent_id"])
@@ -33,7 +39,7 @@ def _print_comment_tree(comments: list[dict], indent: str):
         _print_comment_tree(comment.get("replies", []), indent + "  ")
 
 
-def print_feed_item(item: dict, indent: str = ""):
+def print_feed_item(item: dict[str, Any], indent: str = "") -> None:
     """Print a single feed item."""
     console = get_console()
     t = item.get("type", "")
@@ -66,7 +72,7 @@ def print_feed_item(item: dict, indent: str = ""):
     _print_comment_tree(item.get("comments", []), f"{indent}           ")
 
 
-def print_feed_list(items: list[dict]):
+def print_feed_list(items: list[dict[str, Any]]) -> None:
     """Print a list of feed items as a table."""
     console = get_console()
     table = Table(show_edge=False, box=box.SIMPLE, pad_edge=False)
@@ -103,7 +109,7 @@ def print_feed_list(items: list[dict]):
     console.print(table)
 
 
-def print_feed_detail(data: dict):
+def print_feed_detail(data: dict[str, Any]) -> None:
     """Print full detail of a single feed post."""
     console = get_console()
     t = data.get("type", "post")
@@ -131,7 +137,7 @@ def print_feed_detail(data: dict):
         _print_comment_detail_tree(comments, indent="  ")
 
 
-def _print_comment_detail_tree(comments: list[dict], indent: str):
+def _print_comment_detail_tree(comments: list[dict[str, Any]], indent: str) -> None:
     console = get_console()
     for comment in comments:
         c_agent = escape(comment["agent_id"])

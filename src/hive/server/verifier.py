@@ -34,6 +34,7 @@ from .verification import (
     STATUS_PENDING,
     STATUS_RUNNING,
     STATUS_SUCCESS,
+    VerificationConfig,
     recompute_task_stats,
     verification_config_from_raw,
 )
@@ -51,14 +52,18 @@ AGENT_DIR = "/home/daytona/agent"
 
 @dataclass(slots=True)
 class VerificationJob:
+    """All metadata needed to verify a queued run."""
+
     id: str
     task_id: str
     repo_url: str
     fork_url: str | None
-    config: Any
+    config: VerificationConfig
 
 
 def parse_score(output: str) -> float | None:
+    """Extract the final numeric score from eval output."""
+
     for line in reversed(output.strip().splitlines()):
         match = re.search(r"(?:score|accuracy|result)\s*[:=]\s*([\d.]+)", line, re.IGNORECASE)
         if match:
@@ -76,6 +81,8 @@ def parse_score(output: str) -> float | None:
 
 
 async def claim_next_job() -> VerificationJob | None:
+    """Atomically claim the oldest pending verification job."""
+
     started_at = now()
     async with get_db() as conn:
         row = await (await conn.execute(
@@ -110,6 +117,8 @@ async def claim_next_job() -> VerificationJob | None:
 
 
 async def requeue_stale_jobs() -> int:
+    """Move stuck running jobs back to pending so another worker can retry them."""
+
     cutoff = now() - timedelta(seconds=DEFAULT_STALE_AFTER)
     async with get_db() as conn:
         result = await conn.execute(
@@ -123,6 +132,8 @@ async def requeue_stale_jobs() -> int:
 
 
 async def record_result(job: VerificationJob, status: str, score: float | None, log_text: str) -> None:
+    """Persist the verifier outcome and recompute task stats."""
+
     async with get_db() as conn:
         await conn.execute(
             "UPDATE runs SET verification_status = %s, verified_score = %s,"
@@ -142,6 +153,8 @@ async def record_result(job: VerificationJob, status: str, score: float | None, 
 
 
 async def verify_run(daytona: AsyncDaytona, job: VerificationJob) -> None:
+    """Run canonical prepare/eval in Daytona and store the verification result."""
+
     sandbox = None
     try:
         if not job.config.enabled:
@@ -154,6 +167,7 @@ async def verify_run(daytona: AsyncDaytona, job: VerificationJob) -> None:
         sandbox = await _create_sandbox(daytona)
         logs: list[str] = []
 
+        # Clone the trusted task repo, then overlay only the agent-owned paths before running scripts.
         await sandbox.git.clone(url=job.repo_url, path=TASK_DIR)
         await sandbox.git.clone(url=job.fork_url, path=AGENT_DIR, commit_id=job.id)
 
@@ -205,13 +219,17 @@ async def verify_run(daytona: AsyncDaytona, job: VerificationJob) -> None:
 
 
 class VerificationFailed(Exception):
+    """Raised when a sandbox command fails and logs should be preserved."""
+
     def __init__(self, message: str, logs: list[str]):
         super().__init__(message)
         self.message = message
         self.logs = logs
 
 
-async def _create_sandbox(daytona: AsyncDaytona):
+async def _create_sandbox(daytona: AsyncDaytona) -> Any:
+    """Create a Daytona sandbox, using snapshot params when the SDK supports them."""
+
     if CreateSandboxFromSnapshotParams is None:
         return await daytona.create(timeout=SANDBOX_TIMEOUT)
     params = CreateSandboxFromSnapshotParams(
@@ -223,7 +241,9 @@ async def _create_sandbox(daytona: AsyncDaytona):
     return await daytona.create(params, timeout=SANDBOX_TIMEOUT)
 
 
-async def _path_exists(sandbox, path: str) -> bool:
+async def _path_exists(sandbox: Any, path: str) -> bool:
+    """Check whether a file exists inside the sandbox."""
+
     result = await sandbox.process.exec(
         f"test -f {shlex.quote(path)}",
         timeout=10,
@@ -231,7 +251,17 @@ async def _path_exists(sandbox, path: str) -> bool:
     return result.exit_code == 0
 
 
-async def _run_checked(sandbox, command: str, logs: list[str], *, cwd: str, timeout: int, section: str):
+async def _run_checked(
+    sandbox: Any,
+    command: str,
+    logs: list[str],
+    *,
+    cwd: str,
+    timeout: int,
+    section: str,
+) -> Any:
+    """Execute a sandbox command, appending logs and raising on non-zero exit."""
+
     result = await sandbox.process.exec(command, cwd=cwd, timeout=timeout)
     logs.append(_format_section(section, command, result.exit_code, result.result or ""))
     if result.exit_code != 0:
@@ -240,6 +270,8 @@ async def _run_checked(sandbox, command: str, logs: list[str], *, cwd: str, time
 
 
 def _overlay_command(rel_path: str) -> str:
+    """Build the shell command that copies one mutable path into the canonical repo."""
+
     src = f"{AGENT_DIR}/{rel_path}"
     dest = f"{TASK_DIR}/{rel_path}"
     parent = os.path.dirname(dest) or TASK_DIR
@@ -251,6 +283,8 @@ def _overlay_command(rel_path: str) -> str:
 
 
 def _format_section(section: str, command: str, exit_code: int, output: str) -> str:
+    """Format one command's output for the stored verification log."""
+
     return (
         f"## {section}\n"
         f"$ {command}\n"
@@ -260,11 +294,15 @@ def _format_section(section: str, command: str, exit_code: int, output: str) -> 
 
 
 def _format_logs(logs: list[str], prefix: str | None = None) -> str:
+    """Join verifier log sections with an optional summary prefix."""
+
     parts = [part for part in [prefix, *logs] if part]
     return "\n\n".join(parts)
 
 
 async def poll_loop(daytona: AsyncDaytona) -> None:
+    """Continuously reclaim stale jobs and verify newly claimed runs."""
+
     while True:
         reclaimed = await requeue_stale_jobs()
         if reclaimed:
@@ -281,6 +319,8 @@ async def poll_loop(daytona: AsyncDaytona) -> None:
 
 
 async def main() -> None:
+    """Entry point for the standalone verification worker."""
+
     init_db()
     await init_pool(min_size=1, max_size=2)
 

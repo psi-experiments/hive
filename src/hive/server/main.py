@@ -329,11 +329,14 @@ def _validate_task_id(task_id: str):
 
 
 def _validate_task_description(description: str):
+    """Reject task descriptions that exceed the current public limit."""
+
     if len(description) > _TASK_DESCRIPTION_MAX_LENGTH:
         raise HTTPException(400, f"description must be {_TASK_DESCRIPTION_MAX_LENGTH} characters or fewer")
 
 
-async def _load_task_or_404(conn, task_id: str) -> tuple[dict[str, Any], Any]:
+async def _load_task_or_404(conn: Any, task_id: str) -> tuple[dict[str, Any], Any]:
+    """Fetch a task and its normalized verification config."""
     row = await (await conn.execute("SELECT * FROM tasks WHERE id = %s", (task_id,))).fetchone()
     if not row:
         raise HTTPException(404, "task not found")
@@ -375,6 +378,8 @@ async def create_task(
 @router.patch("/tasks/{task_id}")
 async def update_task(task_id: str, body: dict[str, Any], token: str = Query(...),
                       x_admin_key: str = Header("")):
+    """Update task metadata, validating verification config changes up front."""
+
     allowed = {"name", "description", "config"}
     updates = {k: v for k, v in body.items() if k in allowed}
     if not updates:
@@ -508,6 +513,8 @@ async def clone_task(task_id: str, token: str = Query(...)):
 
 @router.post("/tasks/{task_id}/submit", status_code=201)
 async def submit_run(task_id: str, body: dict[str, Any], token: str = Query(...)):
+    """Record a run submission and queue verification when the task requires it."""
+
     ts = now()
     async with get_db() as conn:
         agent_id = await get_agent(token, conn)
@@ -535,6 +542,7 @@ async def submit_run(task_id: str, body: dict[str, Any], token: str = Query(...)
                 parent_id = parent_row["id"]
         fork_row = await (await conn.execute("SELECT id FROM forks WHERE task_id = %s AND agent_id = %s", (task_id, agent_id))).fetchone()
         fork_id = fork_row["id"] if fork_row else None
+        # Verified tasks need a fork because the worker replays the exact submitted commit from that repo.
         if verification.enabled and fork_id is None:
             raise HTTPException(400, "verified tasks require a fork; clone the task before submitting runs")
         verification_status = verification.submission_status
@@ -565,6 +573,8 @@ async def submit_run(task_id: str, body: dict[str, Any], token: str = Query(...)
 async def list_runs(task_id: str, sort: str = Query("score"), view: str = Query("best_runs"),
               agent: str | None = Query(None), verified_only: bool = Query(False),
               page: int = Query(1), per_page: int = Query(20)):
+    """List runs, optionally filtering down to officially verified results only."""
+
     page, per_page, offset = paginate(page, per_page)
     async with get_db() as conn:
         await _load_task_or_404(conn, task_id)
@@ -626,6 +636,7 @@ async def list_runs(task_id: str, sort: str = Query("score"), view: str = Query(
 
         where, params = "r.task_id = %s AND r.valid IS NOT FALSE", [task_id]
         if agent: where += " AND r.agent_id = %s"; params.append(agent)
+        # `verified_only` switches both the filter and the score column used for sorting.
         if verified_only:
             where += " AND r.verified = TRUE AND r.verified_score IS NOT NULL"
         else:
@@ -979,6 +990,8 @@ async def post_to_feed(task_id: str, body: dict[str, Any], token: str = Query(..
 @router.get("/tasks/{task_id}/feed")
 async def get_feed(task_id: str, since: str | None = Query(None),
              page: int = Query(1), per_page: int = Query(50), agent: str | None = Query(None)):
+    """Return the task feed, including verification metadata for result posts."""
+
     page, per_page, offset = paginate(page, per_page)
     async with get_db() as conn:
         where, params = "p.task_id = %s", [task_id]
@@ -1019,6 +1032,8 @@ async def get_feed(task_id: str, since: str | None = Query(None),
 
 @router.get("/tasks/{task_id}/feed/{post_id}")
 async def get_post(task_id: str, post_id: int, page: int = Query(1), per_page: int = Query(30)):
+    """Return one post with paginated root comments and verification details."""
+
     page, per_page, offset = paginate(page, per_page)
     async with get_db() as conn:
         row = await (await conn.execute(
@@ -1119,6 +1134,8 @@ async def create_claim(task_id: str, body: dict[str, Any], token: str = Query(..
 
 @router.get("/tasks/{task_id}/context")
 async def get_context(task_id: str):
+    """Build the all-in-one task view using the task's official scoring mode."""
+
     async with get_db() as conn:
         task_row, verification = await _load_task_or_404(conn, task_id)
         t = dict(task_row)
@@ -1137,6 +1154,7 @@ async def get_context(task_id: str):
             "best_score": t.get("best_score"),
             "last_activity": last_activity,
         }
+        # Verified tasks rank by the server's score so the task context matches official standings.
         leaderboard_score = "r.verified_score" if verification.enabled else "r.score"
         leaderboard = await (await conn.execute(
             "SELECT r.id, r.agent_id, r.score, r.tldr, r.branch, r.verified,"

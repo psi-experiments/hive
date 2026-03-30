@@ -1,3 +1,5 @@
+"""Helpers for task verification config and official score bookkeeping."""
+
 import json
 import os
 import posixpath
@@ -21,6 +23,8 @@ TERMINAL_STATUSES = {STATUS_SUCCESS, STATUS_FAILED, STATUS_ERROR}
 
 @dataclass(frozen=True, slots=True)
 class VerificationConfig:
+    """Normalized task-level verification settings."""
+
     enabled: bool = False
     mutable_paths: tuple[str, ...] = ()
     prepare_timeout: int = DEFAULT_PREPARE_TIMEOUT
@@ -36,6 +40,8 @@ class VerificationConfig:
 
 
 def parse_task_config(raw: str | dict[str, Any] | None, *, strict: bool = False) -> dict[str, Any]:
+    """Parse a task config JSON blob into a dict."""
+
     if raw is None or raw == "":
         return {}
     if isinstance(raw, dict):
@@ -58,6 +64,8 @@ def parse_task_config(raw: str | dict[str, Any] | None, *, strict: bool = False)
 
 
 def normalize_task_config(raw: str | dict[str, Any] | None) -> tuple[str | None, dict[str, Any], VerificationConfig]:
+    """Validate and canonicalize task config before storing it."""
+
     if raw is None:
         return None, {}, VerificationConfig()
 
@@ -77,10 +85,14 @@ def normalize_task_config(raw: str | dict[str, Any] | None) -> tuple[str | None,
 
 
 def verification_config_from_raw(raw: str | dict[str, Any] | None) -> VerificationConfig:
+    """Build a normalized verification config from raw task config."""
+
     return verification_config_from_dict(parse_task_config(raw), strict=False)
 
 
 def verification_config_from_dict(data: dict[str, Any], *, strict: bool) -> VerificationConfig:
+    """Extract verification settings from a parsed task config dict."""
+
     verify = data.get("verify", False)
     if not isinstance(verify, bool):
         if strict:
@@ -115,14 +127,19 @@ def verification_config_from_dict(data: dict[str, Any], *, strict: bool) -> Veri
 
 
 def score_field(config: VerificationConfig) -> str:
+    """Return the run column that counts as the task's official score."""
+
     return config.score_field
 
 
-async def recompute_task_stats(conn, task_id: str, config: VerificationConfig | None = None) -> None:
+async def recompute_task_stats(conn: Any, task_id: str, config: VerificationConfig | None = None) -> None:
+    """Refresh task best-score and improvement counters from official run scores."""
+
     if config is None:
         row = await (await conn.execute("SELECT config FROM tasks WHERE id = %s", (task_id,))).fetchone()
         config = verification_config_from_raw(row["config"] if row else None)
 
+    # Verified tasks rank by server-computed scores; legacy tasks still use self-reported scores.
     run_score_field = score_field(config)
     row = await (await conn.execute(
         f"WITH ranked AS ("
@@ -146,6 +163,8 @@ async def recompute_task_stats(conn, task_id: str, config: VerificationConfig | 
 
 
 def _parse_timeout(value: Any, *, name: str, default: int, strict: bool) -> int:
+    """Validate a positive timeout override, or fall back to the default."""
+
     if value is None:
         return default
     if not isinstance(value, int) or value <= 0:
@@ -156,6 +175,8 @@ def _parse_timeout(value: Any, *, name: str, default: int, strict: bool) -> int:
 
 
 def _parse_mutable_paths(value: Any, *, strict: bool) -> list[str]:
+    """Validate the list of paths agents are allowed to override during verification."""
+
     if value is None:
         return []
     if not isinstance(value, list):
@@ -182,6 +203,8 @@ def _parse_mutable_paths(value: Any, *, strict: bool) -> list[str]:
 
 
 def _normalize_mutable_path(path: str) -> str:
+    """Normalize a mutable path and reject absolute or parent-traversing values."""
+
     raw = path.strip()
     if not raw:
         return ""
