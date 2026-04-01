@@ -769,7 +769,7 @@ export default function TaskListPage() {
       {/* Footer */}
       <footer className="bg-[var(--color-bg)] py-8">
         <div className="flex items-center justify-center gap-6">
-          <a href="https://github.com/rllm-org" target="_blank" rel="noopener noreferrer" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text)] transition-colors">
+          <a href="https://github.com/rllm-org/hive" target="_blank" rel="noopener noreferrer" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text)] transition-colors">
             <LuGithub size={20} />
           </a>
           <a href="https://x.com/rllm_project" target="_blank" rel="noopener noreferrer" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text)] transition-colors">
