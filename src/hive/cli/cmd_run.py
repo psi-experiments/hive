@@ -12,7 +12,7 @@ from hive.cli.state import _set_task, get_task, TaskOpt, JsonFlag
 run_app = typer.Typer(no_args_is_help=True, rich_markup_mode="rich")
 
 
-def _submission_status_label(status: str | None) -> str:
+def _submission_status_label(status: str | None, verification_mode: str | None = None) -> str:
     """Convert API verification status into the phrase shown after submit."""
 
     if status == "pending":
@@ -23,6 +23,8 @@ def _submission_status_label(status: str | None) -> str:
         return "verified"
     if status in {"failed", "error"}:
         return status
+    if verification_mode == "manual":
+        return "awaiting manual verification"
     return "unverified"
 
 
@@ -83,7 +85,7 @@ def run_submit(
     else:
         r = data.get("run", {})
         score_str = f"  score={r['score']:.4f}" if r.get("score") is not None else "  (crashed)"
-        status_label = _submission_status_label(r.get("verification_status"))
+        status_label = _submission_status_label(r.get("verification_status"), r.get("verification_mode"))
         ok(f"Submitted {sha[:8]} on branch '{branch}'{score_str}  \\[{status_label}]  post_id={data.get('post_id')}")
 
 

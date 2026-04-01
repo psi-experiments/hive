@@ -348,9 +348,42 @@ class TestPatchTask:
             ("{", "valid json"),
             ("[]", "json object"),
             ({"verify": "yes", "mutable_paths": ["agent.py"]}, "boolean"),
-            ({"verify": True}, "mutable_paths"),
-            ({"verify": True, "mutable_paths": ["../agent.py"]}, "mutable_paths"),
-            ({"verify": True, "mutable_paths": ["agent.py"], "eval_timeout": 0}, "positive integer"),
+            (
+                {
+                    "verify": True,
+                    "verification_mode": "manual",
+                    "score_key": "accuracy",
+                    "direction": "maximize",
+                    "result_format": "stdout_keyed",
+                    "sandbox": {"snapshot": "hive-verify-python"},
+                },
+                "mutable_paths",
+            ),
+            (
+                {
+                    "verify": True,
+                    "verification_mode": "manual",
+                    "mutable_paths": ["../agent.py"],
+                    "score_key": "accuracy",
+                    "direction": "maximize",
+                    "result_format": "stdout_keyed",
+                    "sandbox": {"snapshot": "hive-verify-python"},
+                },
+                "mutable_paths",
+            ),
+            (
+                {
+                    "verify": True,
+                    "verification_mode": "manual",
+                    "mutable_paths": ["agent.py"],
+                    "score_key": "accuracy",
+                    "direction": "maximize",
+                    "result_format": "stdout_keyed",
+                    "sandbox": {"snapshot": "hive-verify-python"},
+                    "eval_timeout": 0,
+                },
+                "positive integer",
+            ),
         ],
     )
     def test_config_update_rejects_invalid_values(self, registered_agent, _seed_task, monkeypatch, config, detail_substr):
@@ -373,26 +406,60 @@ class TestPatchTask:
             json={
                 "config": {
                     "verify": True,
+                    "verification_mode": "manual",
                     "mutable_paths": ["agent.py/", "prompts//", "agent.py"],
                     "prepare_timeout": 30,
                     "eval_timeout": 60,
+                    "score_key": "accuracy",
+                    "direction": "maximize",
+                    "result_format": "stdout_keyed",
+                    "sandbox": {
+                        "snapshot": "hive-verify-python",
+                        "env": {"SOLVER_MODEL": "gpt-5.4-mini"},
+                    },
                 }
             },
         )
         assert resp.status_code == 200
         assert resp.json()["config"] == {
             "verify": True,
+            "verification_mode": "manual",
             "mutable_paths": ["agent.py", "prompts"],
             "prepare_timeout": 30,
             "eval_timeout": 60,
+            "score_key": "accuracy",
+            "direction": "maximize",
+            "result_format": "stdout_keyed",
+            "sandbox": {
+                "snapshot": "hive-verify-python",
+                "env": {"SOLVER_MODEL": "gpt-5.4-mini"},
+                "secret_env": {},
+                "volumes": [],
+                "path_links": [],
+                "network_block_all": None,
+                "network_allow_list": None,
+            },
         }
 
         task = client.get("/api/tasks/t1").json()
         assert task["config"] == {
             "verify": True,
+            "verification_mode": "manual",
             "mutable_paths": ["agent.py", "prompts"],
             "prepare_timeout": 30,
             "eval_timeout": 60,
+            "score_key": "accuracy",
+            "direction": "maximize",
+            "result_format": "stdout_keyed",
+            "sandbox": {
+                "snapshot": "hive-verify-python",
+                "env": {"SOLVER_MODEL": "gpt-5.4-mini"},
+                "secret_env": {},
+                "volumes": [],
+                "path_links": [],
+                "network_block_all": None,
+                "network_allow_list": None,
+            },
         }
 
 

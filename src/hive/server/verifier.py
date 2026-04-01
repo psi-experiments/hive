@@ -21,9 +21,11 @@ try:
 except ImportError:  # pragma: no cover - exercised only when Daytona is unavailable.
     AsyncDaytona = Any  # type: ignore[assignment]
     CreateSandboxFromSnapshotParams = None  # type: ignore[assignment]
+    VolumeMount = None  # type: ignore[assignment]
 else:  # pragma: no branch
     AsyncDaytona = _daytona.AsyncDaytona  # type: ignore[attr-defined]
     CreateSandboxFromSnapshotParams = getattr(_daytona, "CreateSandboxFromSnapshotParams", None)
+    VolumeMount = getattr(_daytona, "VolumeMount", None)
 
 from .db import close_pool, get_db, init_db, init_pool, now
 from .verification import (
@@ -35,6 +37,7 @@ from .verification import (
     STATUS_RUNNING,
     STATUS_SUCCESS,
     VerificationConfig,
+    normalize_verified_score,
     recompute_task_stats,
     verification_config_from_raw,
 )
@@ -43,6 +46,7 @@ log = logging.getLogger("hive.verifier")
 
 POLL_INTERVAL = int(os.environ.get("VERIFY_POLL_INTERVAL", "5"))
 SANDBOX_TIMEOUT = int(os.environ.get("VERIFY_SANDBOX_TIMEOUT", "120"))
+VOLUME_TIMEOUT = int(os.environ.get("VERIFY_VOLUME_TIMEOUT", "120"))
 AUTO_ARCHIVE_INTERVAL = int(os.environ.get("VERIFY_AUTO_ARCHIVE_INTERVAL", "60"))
 AUTO_DELETE_INTERVAL = int(os.environ.get("VERIFY_AUTO_DELETE_INTERVAL", "120"))
 
@@ -57,27 +61,26 @@ class VerificationJob:
     id: str
     task_id: str
     repo_url: str
+    task_repo_sha: str | None
     fork_url: str | None
-    config: VerificationConfig
+    config: VerificationConfig | None
 
 
-def parse_score(output: str) -> float | None:
-    """Extract the final numeric score from eval output."""
+FLOAT_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 
-    for line in reversed(output.strip().splitlines()):
-        match = re.search(r"(?:score|accuracy|result)\s*[:=]\s*([\d.]+)", line, re.IGNORECASE)
-        if match:
-            return float(match.group(1))
 
-    for line in reversed(output.strip().splitlines()):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            return float(line)
-        except ValueError:
-            continue
-    return None
+def parse_score(
+    output: str,
+    *,
+    score_key: str | None = None,
+    result_format: str = "stdout_keyed",
+) -> float | None:
+    """Extract a raw metric from eval output using the configured contract."""
+
+    if result_format == "stdout_last_float":
+        return _parse_last_float(output)
+
+    return _parse_keyed_score(output, score_key)
 
 
 async def claim_next_job() -> VerificationJob | None:
@@ -96,9 +99,11 @@ async def claim_next_job() -> VerificationJob | None:
             "    LIMIT 1"
             "    FOR UPDATE SKIP LOCKED"
             "  )"
-            "  RETURNING r.id, r.task_id, r.fork_id"
+            "  RETURNING r.id, r.task_id, r.fork_id, r.task_repo_sha, r.verification_config"
             ")"
-            " SELECT c.id, c.task_id, t.repo_url, t.config, f.fork_url"
+            " SELECT c.id, c.task_id, t.repo_url,"
+            "        c.task_repo_sha, c.verification_config,"
+            "        f.fork_url"
             " FROM claimed c"
             " JOIN tasks t ON t.id = c.task_id"
             " LEFT JOIN forks f ON f.id = c.fork_id",
@@ -106,11 +111,14 @@ async def claim_next_job() -> VerificationJob | None:
         )).fetchone()
     if not row:
         return None
-    config = verification_config_from_raw(row["config"])
+    config = None
+    if row["verification_config"] is not None:
+        config = verification_config_from_raw(row["verification_config"])
     return VerificationJob(
         id=row["id"],
         task_id=row["task_id"],
         repo_url=row["repo_url"],
+        task_repo_sha=row["task_repo_sha"],
         fork_url=row["fork_url"],
         config=config,
     )
@@ -131,25 +139,35 @@ async def requeue_stale_jobs() -> int:
         return result.rowcount or 0
 
 
-async def record_result(job: VerificationJob, status: str, score: float | None, log_text: str) -> None:
+async def record_result(
+    job: VerificationJob,
+    status: str,
+    metric_value: float | None,
+    verified_score: float | None,
+    log_text: str,
+) -> None:
     """Persist the verifier outcome and recompute task stats."""
 
     async with get_db() as conn:
         await conn.execute(
             "UPDATE runs SET verification_status = %s, verified_score = %s,"
+            " verified_metric_key = %s, verified_metric_value = %s,"
             " verification_log = %s, verified = %s, verified_at = %s,"
             " verification_started_at = NULL"
             " WHERE id = %s",
             (
                 status,
-                score,
+                verified_score,
+                job.config.score_key if status == STATUS_SUCCESS and job.config is not None else None,
+                metric_value,
                 log_text[:LOG_LIMIT],
                 status == STATUS_SUCCESS,
                 now() if status == STATUS_SUCCESS else None,
                 job.id,
             ),
         )
-        await recompute_task_stats(conn, job.task_id, job.config)
+        if job.config is not None:
+            await recompute_task_stats(conn, job.task_id, job.config)
 
 
 async def verify_run(daytona: AsyncDaytona, job: VerificationJob) -> None:
@@ -157,18 +175,25 @@ async def verify_run(daytona: AsyncDaytona, job: VerificationJob) -> None:
 
     sandbox = None
     try:
-        if not job.config.enabled:
-            await record_result(job, STATUS_ERROR, None, "Task verification is not enabled")
-            return
-        if not job.fork_url:
-            await record_result(job, STATUS_ERROR, None, "No fork found for this run")
+        if job.config is None:
+            await record_result(job, STATUS_ERROR, None, None, "No pinned verification config found for this run")
             return
 
-        sandbox = await _create_sandbox(daytona)
+        if not job.config.enabled:
+            await record_result(job, STATUS_ERROR, None, None, "Task verification is not enabled")
+            return
+        if not job.fork_url:
+            await record_result(job, STATUS_ERROR, None, None, "No fork found for this run")
+            return
+        if not job.task_repo_sha:
+            await record_result(job, STATUS_ERROR, None, None, "No pinned task repo SHA found for this run")
+            return
+
+        sandbox = await _create_sandbox(daytona, job.config)
         logs: list[str] = []
 
         # Clone the trusted task repo, then overlay only the agent-owned paths before running scripts.
-        await sandbox.git.clone(url=job.repo_url, path=TASK_DIR)
+        await sandbox.git.clone(url=job.repo_url, path=TASK_DIR, commit_id=job.task_repo_sha)
         await sandbox.git.clone(url=job.fork_url, path=AGENT_DIR, commit_id=job.id)
 
         for rel_path in job.config.mutable_paths:
@@ -180,6 +205,9 @@ async def verify_run(daytona: AsyncDaytona, job: VerificationJob) -> None:
                 timeout=job.config.prepare_timeout,
                 section=f"overlay {rel_path}",
             )
+
+        await _materialize_path_links(sandbox, job.config, logs)
+        await _write_env_file_if_needed(sandbox, job.config, logs)
 
         if await _path_exists(sandbox, f"{TASK_DIR}/prepare.sh"):
             await _run_checked(
@@ -199,17 +227,22 @@ async def verify_run(daytona: AsyncDaytona, job: VerificationJob) -> None:
             timeout=job.config.eval_timeout,
             section="eval/eval.sh",
         )
-        verified_score = parse_score(result.result or "")
-        if verified_score is None:
-            await record_result(job, STATUS_FAILED, None, _format_logs(logs, "Could not parse score from eval output"))
+        metric_value = parse_score(
+            result.result or "",
+            score_key=job.config.score_key,
+            result_format=job.config.result_format,
+        )
+        if metric_value is None:
+            await record_result(job, STATUS_FAILED, None, None, _format_logs(logs, "Could not parse score from eval output"))
             return
 
-        await record_result(job, STATUS_SUCCESS, verified_score, _format_logs(logs))
+        verified_score = normalize_verified_score(metric_value, job.config)
+        await record_result(job, STATUS_SUCCESS, metric_value, verified_score, _format_logs(logs))
     except VerificationFailed as exc:
-        await record_result(job, STATUS_FAILED, None, _format_logs(exc.logs, exc.message))
+        await record_result(job, STATUS_FAILED, None, None, _format_logs(exc.logs, exc.message))
     except Exception as exc:
         log.exception("Verification error for run %s", job.id)
-        await record_result(job, STATUS_ERROR, None, str(exc))
+        await record_result(job, STATUS_ERROR, None, None, str(exc))
     finally:
         if sandbox is not None:
             try:
@@ -227,18 +260,151 @@ class VerificationFailed(Exception):
         self.logs = logs
 
 
-async def _create_sandbox(daytona: AsyncDaytona) -> Any:
-    """Create a Daytona sandbox, using snapshot params when the SDK supports them."""
+async def _create_sandbox(daytona: AsyncDaytona, config: VerificationConfig) -> Any:
+    """Create a Daytona sandbox using the task's pinned runtime contract."""
 
     if CreateSandboxFromSnapshotParams is None:
-        return await daytona.create(timeout=SANDBOX_TIMEOUT)
+        raise RuntimeError("Installed Daytona SDK does not expose CreateSandboxFromSnapshotParams")
+
+    env_vars = _resolve_env_vars(config)
+    volumes = await _resolve_volume_mounts(daytona, config)
     params = CreateSandboxFromSnapshotParams(
-        language="python",
+        snapshot=config.sandbox.snapshot,
         auto_stop_interval=0,
         auto_archive_interval=AUTO_ARCHIVE_INTERVAL,
         auto_delete_interval=AUTO_DELETE_INTERVAL,
+        env_vars=env_vars or None,
+        volumes=volumes or None,
+        network_block_all=config.sandbox.network_block_all,
+        network_allow_list=config.sandbox.network_allow_list,
     )
     return await daytona.create(params, timeout=SANDBOX_TIMEOUT)
+
+
+def _resolve_env_vars(config: VerificationConfig) -> dict[str, str]:
+    """Resolve plain and secret-backed env vars for the Daytona sandbox."""
+
+    env_vars = dict(config.sandbox.env)
+    for env_name, ref in config.sandbox.secret_env:
+        secret_name = f"HIVE_VERIFY_SECRET_{ref.upper()}"
+        secret_value = os.environ.get(secret_name)
+        if secret_value is None:
+            raise RuntimeError(f"Missing verifier secret env {secret_name}")
+        env_vars[env_name] = secret_value
+    return env_vars
+
+
+async def _resolve_volume_mounts(daytona: AsyncDaytona, config: VerificationConfig) -> list[Any]:
+    """Resolve named Daytona volumes into sandbox mounts."""
+
+    if not config.sandbox.volumes:
+        return []
+    if VolumeMount is None:
+        raise RuntimeError("Installed Daytona SDK does not expose VolumeMount")
+
+    mounts: list[Any] = []
+    for volume_config in config.sandbox.volumes:
+        await daytona.volume.get(volume_config.name, create=True)
+        volume = await _wait_for_volume_ready(daytona, volume_config.name, timeout=VOLUME_TIMEOUT)
+        mounts.append(
+            VolumeMount(
+                volume_id=volume.id,
+                mount_path=volume_config.mount_path,
+                subpath=volume_config.subpath,
+            )
+        )
+    return mounts
+
+
+async def _wait_for_volume_ready(daytona: AsyncDaytona, volume_name: str, *, timeout: int) -> Any:
+    """Wait until a Daytona volume becomes mountable."""
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        volume = await daytona.volume.get(volume_name)
+        if str(volume.state).endswith("READY"):
+            return volume
+        if asyncio.get_running_loop().time() >= deadline:
+            raise RuntimeError(f"Timed out waiting for Daytona volume {volume_name} to become ready")
+        await asyncio.sleep(1)
+
+
+async def _materialize_path_links(
+    sandbox: Any,
+    config: VerificationConfig,
+    logs: list[str],
+) -> None:
+    """Expose mounted sandbox paths at task-local locations via symlinks."""
+
+    for path_link in config.sandbox.path_links:
+        target = f"{TASK_DIR}/{path_link.target_path}"
+        parent = os.path.dirname(target)
+
+        if await _path_exists(sandbox, target):
+            raise VerificationFailed(f"Runtime link target already exists: {path_link.target_path}", logs)
+
+        if parent and parent != TASK_DIR:
+            await _run_checked(
+                sandbox,
+                f"mkdir -p {shlex.quote(parent)}",
+                logs,
+                cwd=TASK_DIR,
+                timeout=config.prepare_timeout,
+                section=f"mkdir {os.path.dirname(path_link.target_path)}",
+            )
+
+        await _run_checked(
+            sandbox,
+            f"ln -s {shlex.quote(path_link.source_path)} {shlex.quote(target)}",
+            logs,
+            cwd=TASK_DIR,
+            timeout=config.prepare_timeout,
+            section=f"link {path_link.target_path}",
+        )
+
+
+async def _write_env_file_if_needed(
+    sandbox: Any,
+    config: VerificationConfig,
+    logs: list[str],
+) -> None:
+    """Materialize a verifier-owned env file inside the canonical task checkout."""
+
+    if not config.sandbox.env_file_path:
+        return
+
+    env_vars = _resolve_env_vars(config)
+    env_lines = "\n".join(f"{key}={value}" for key, value in env_vars.items()) + "\n"
+    path = f"{TASK_DIR}/{config.sandbox.env_file_path}"
+    parent = os.path.dirname(path)
+
+    # Create the parent directory in-band so the verifier log still shows the
+    # filesystem setup step, but keep secret values out of the shell command.
+    if parent and parent != TASK_DIR:
+        await _run_checked(
+            sandbox,
+            f"mkdir -p {shlex.quote(parent)}",
+            logs,
+            cwd=TASK_DIR,
+            timeout=config.prepare_timeout,
+            section=f"mkdir {os.path.dirname(config.sandbox.env_file_path)}",
+        )
+
+    try:
+        await sandbox.fs.upload_file(env_lines.encode("utf-8"), path, timeout=config.prepare_timeout)
+    except Exception as exc:
+        logs.append(_format_section(f"write {config.sandbox.env_file_path}", "[daytona.fs.upload_file]", 1, str(exc)))
+        raise VerificationFailed(f"write {config.sandbox.env_file_path} failed", logs) from exc
+
+    logs.append(_format_section(f"write {config.sandbox.env_file_path}", "[daytona.fs.upload_file]", 0, "uploaded"))
+    await _run_checked(
+        sandbox,
+        f"chmod 600 {shlex.quote(path)}",
+        logs,
+        cwd=TASK_DIR,
+        timeout=config.prepare_timeout,
+        section=f"chmod {config.sandbox.env_file_path}",
+    )
 
 
 async def _path_exists(sandbox: Any, path: str) -> bool:
@@ -298,6 +464,32 @@ def _format_logs(logs: list[str], prefix: str | None = None) -> str:
 
     parts = [part for part in [prefix, *logs] if part]
     return "\n\n".join(parts)
+
+
+def _parse_keyed_score(output: str, score_key: str | None) -> float | None:
+    """Parse `key: value` or `key=value` output from the canonical eval."""
+
+    keys = [score_key.lower()] if score_key else ["score", "accuracy", "result"]
+    key_pattern = "|".join(re.escape(key) for key in keys)
+    regex = re.compile(rf"(?:{key_pattern})\s*[:=]\s*({FLOAT_RE})", re.IGNORECASE)
+
+    for line in reversed(output.strip().splitlines()):
+        match = regex.search(line)
+        if match:
+            return float(match.group(1))
+    return None
+
+
+def _parse_last_float(output: str) -> float | None:
+    """Parse a trailing bare float from eval output."""
+
+    for line in reversed(output.strip().splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        if re.fullmatch(FLOAT_RE, line):
+            return float(line)
+    return None
 
 
 async def poll_loop(daytona: AsyncDaytona) -> None:

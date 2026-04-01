@@ -2,6 +2,8 @@ import asyncio
 import json
 from datetime import timedelta
 
+import pytest
+
 from hive.server.db import get_db_sync, now
 from hive.server.verification import DEFAULT_STALE_AFTER
 from hive.server.verifier import claim_next_job, parse_score, requeue_stale_jobs, verify_run
@@ -24,7 +26,18 @@ def _insert_task(task_id="tv1", config=None):
 
 
 def _insert_verifiable_task(task_id="tv1"):
-    _insert_task(task_id, {"verify": True, "mutable_paths": ["agent.py"]})
+    _insert_task(
+        task_id,
+        {
+            "verify": True,
+            "verification_mode": "on_submit",
+            "mutable_paths": ["agent.py"],
+            "score_key": "accuracy",
+            "direction": "maximize",
+            "result_format": "stdout_keyed",
+            "sandbox": {"snapshot": "hive-verify-python"},
+        },
+    )
 
 
 def _admin_headers(monkeypatch, key="test-key"):
@@ -53,6 +66,15 @@ def _load_run(run_id):
             " verification_started_at FROM runs WHERE id = %s",
             (run_id,),
         ).fetchone()
+
+
+@pytest.fixture(autouse=True)
+def _fake_daytona_snapshot_params(monkeypatch):
+    class FakeSnapshotParams:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("hive.server.verifier.CreateSandboxFromSnapshotParams", FakeSnapshotParams)
 
 
 class FakeExecResult:
@@ -100,6 +122,14 @@ class FakeProcess:
         return FakeExecResult(0, "")
 
 
+class FakeFileSystem:
+    def __init__(self):
+        self.uploads = []
+
+    async def upload_file(self, content, remote_path, timeout=None):
+        self.uploads.append((content, remote_path, timeout))
+
+
 class FakeSandbox:
     def __init__(
         self,
@@ -117,6 +147,7 @@ class FakeSandbox:
             prepare_result=prepare_result,
             overlay_result=overlay_result,
         )
+        self.fs = FakeFileSystem()
 
 
 class FakeDaytona:
@@ -154,7 +185,7 @@ class TestParseScore:
         assert parse_score(output) == 0.42
 
     def test_bare_float_fallback(self):
-        assert parse_score("some log output\n0.91\n") == 0.91
+        assert parse_score("some log output\n0.91\n", result_format="stdout_last_float") == 0.91
 
     def test_returns_none_on_garbage(self):
         assert parse_score("no numbers here\njust text") is None
@@ -475,9 +506,20 @@ class TestVerifierWorker:
         _insert_task("tv-disabled-worker", {"verify": True})
         with get_db_sync() as conn:
             conn.execute(
-                "INSERT INTO runs (id, task_id, agent_id, branch, tldr, message, verification_status, created_at)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                ("disabled1", "tv-disabled-worker", "agent-disabled", "main", "t", "m", "pending", now()),
+                "INSERT INTO runs (id, task_id, agent_id, branch, tldr, message, verification_status,"
+                " verification_config, created_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    "disabled1",
+                    "tv-disabled-worker",
+                    "agent-disabled",
+                    "main",
+                    "t",
+                    "m",
+                    "pending",
+                    json.dumps({"verify": False}),
+                    now(),
+                ),
             )
 
         job = asyncio.run(claim_next_job())
@@ -583,8 +625,9 @@ class TestVerifierWorker:
                 ),
             ).fetchone()["id"]
             conn.execute(
-                "INSERT INTO runs (id, task_id, agent_id, branch, tldr, message, verification_status, created_at)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                "INSERT INTO runs (id, task_id, agent_id, branch, tldr, message, verification_status,"
+                " task_repo_sha, verification_config, created_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     "missing-fork-run",
                     "tv-queue",
@@ -593,12 +636,15 @@ class TestVerifierWorker:
                     "missing fork",
                     "missing fork",
                     "pending",
+                    "task-base-sha",
+                    json.dumps({"verify": True, "mutable_paths": ["agent.py"]}),
                     now() - timedelta(seconds=5),
                 ),
             )
             conn.execute(
-                "INSERT INTO runs (id, task_id, agent_id, branch, tldr, message, verification_status, created_at, fork_id)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "INSERT INTO runs (id, task_id, agent_id, branch, tldr, message, verification_status,"
+                " task_repo_sha, verification_config, created_at, fork_id)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     "next-run",
                     "tv-queue",
@@ -607,6 +653,8 @@ class TestVerifierWorker:
                     "next",
                     "next",
                     "pending",
+                    "task-base-sha",
+                    json.dumps({"verify": True, "mutable_paths": ["agent.py"]}),
                     now(),
                     fork_id,
                 ),

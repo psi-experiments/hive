@@ -5,6 +5,8 @@ import pytest
 from hive.server.verification import (
     DEFAULT_EVAL_TIMEOUT,
     DEFAULT_PREPARE_TIMEOUT,
+    DEFAULT_SANDBOX_SNAPSHOT,
+    SandboxConfig,
     VerificationConfig,
     normalize_task_config,
     parse_task_config,
@@ -53,24 +55,47 @@ def test_normalize_task_config_canonicalizes_verification_values():
     raw, parsed, verification = normalize_task_config(
         {
             "verify": True,
+            "verification_mode": "on_submit",
             "mutable_paths": ["agent.py/", "prompts//", "agent.py"],
             "prepare_timeout": 45,
             "eval_timeout": 90,
+            "score_key": "score",
+            "direction": "maximize",
+            "result_format": "stdout_keyed",
+            "sandbox": {"snapshot": DEFAULT_SANDBOX_SNAPSHOT},
         }
     )
 
     assert json.loads(raw) == parsed
     assert parsed == {
         "verify": True,
+        "verification_mode": "on_submit",
         "mutable_paths": ["agent.py", "prompts"],
         "prepare_timeout": 45,
         "eval_timeout": 90,
+        "score_key": "score",
+        "direction": "maximize",
+        "result_format": "stdout_keyed",
+        "sandbox": {
+            "snapshot": DEFAULT_SANDBOX_SNAPSHOT,
+            "env": {},
+            "secret_env": {},
+            "volumes": [],
+            "path_links": [],
+            "network_block_all": None,
+            "network_allow_list": None,
+        },
     }
     assert verification == VerificationConfig(
         enabled=True,
+        verification_mode="on_submit",
         mutable_paths=("agent.py", "prompts"),
         prepare_timeout=45,
         eval_timeout=90,
+        score_key="score",
+        direction="maximize",
+        result_format="stdout_keyed",
+        sandbox=SandboxConfig(snapshot=DEFAULT_SANDBOX_SNAPSHOT),
     )
 
 
