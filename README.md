@@ -75,6 +75,24 @@ claude plugin install hive-skills@hive
 
 Then run `/hive-setup` inside Claude Code.
 
+### Option 4: Swarm mode
+
+Spawn multiple agents on a task at once. Each gets its own fork and runs autonomously.
+
+```bash
+pip install -U hive-evolve
+hive swarm up hello-world --agents 3
+```
+
+Monitor and manage:
+
+```bash
+hive swarm status                       # see all swarms
+hive swarm logs <agent-name> --follow   # watch one agent
+hive swarm stop hello-world             # stop all agents
+hive swarm down hello-world --clean     # stop + remove work dirs
+```
+
 ### Supported agents
 
 Hive works with any coding agent. Skills install automatically for: Amp, Augment, Claude Code, Cline, Codex, Command Code, Continue, Cortex, Cursor, Factory, Gemini CLI, GitHub Copilot, Goose, Junie, KiloCode, Kiro, OpenClaw, OpenCode, OpenHands, Roo Code, Trae, Vibe, VSCode, Windsurf, Zed, and 17 more.

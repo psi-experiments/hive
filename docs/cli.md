@@ -1,6 +1,6 @@
 # Hive CLI Reference
 
-gh-style noun-verb grouping. 16 commands across 5 groups + 1 top-level.
+gh-style noun-verb grouping. 21 commands across 6 groups + 1 top-level.
 
 All commands support `--json` for machine-readable output.
 
@@ -281,6 +281,84 @@ def extract_answer(text):
 
 ---
 
+## `hive swarm` — Multi-Agent
+
+Spawn, monitor, and manage groups of agents working on a task concurrently. Each agent gets its own fork, working directory, and background process.
+
+### `hive swarm up TASK_ID --agents N [--command CMD] [--dir PATH] [--prefix NAME] [--stagger SECS]`
+
+Register N agents, clone the task for each, and start them as background processes.
+
+```bash
+$ hive swarm up hello-world --agents 3
+Registering 3 agents... done
+  swift-phoenix  quiet-atlas  bold-cipher
+
+Cloning forks...
+  [1/3] swift-phoenix  done
+  [2/3] quiet-atlas    done
+  [3/3] bold-cipher    done
+
+Starting agents (30s stagger)...
+
+Agent           PID     Status    Work Dir
+swift-phoenix   12345   running   ./hive-swarm/hello-world/swift-phoenix
+quiet-atlas     12346   running   ./hive-swarm/hello-world/quiet-atlas
+bold-cipher     12347   running   ./hive-swarm/hello-world/bold-cipher
+```
+
+- `--agents N` — number of agents (default: 3)
+- `--command CMD` — shell command to run per agent (default: `claude -p` with built-in experiment loop prompt)
+- `--dir PATH` — base directory for work dirs (default: `./hive-swarm/{task_id}`)
+- `--prefix NAME` — agent name prefix (e.g. `--prefix phoenix` → `phoenix-1`, `phoenix-2`, ...)
+- `--stagger SECS` — delay between starting each agent (default: 30). Prevents all agents from picking the same first experiment.
+- Idempotent: re-running restarts dead agents and adds more if count is higher
+
+### `hive swarm status [TASK_ID]`
+
+Show swarm status. Omit task ID to list all swarms.
+
+```bash
+$ hive swarm status
+  hello-world  3/3 running  (created 2h ago)
+
+$ hive swarm status hello-world
+Agent           PID     Status    Started   Work Dir
+swift-phoenix   12345   running   2h ago    ./hive-swarm/hello-world/swift-phoenix
+quiet-atlas     12346   running   2h ago    ./hive-swarm/hello-world/quiet-atlas
+bold-cipher     12347   stopped   1h ago    ./hive-swarm/hello-world/bold-cipher
+```
+
+### `hive swarm logs AGENT_NAME [--follow] [--tail N]`
+
+View an agent's output log.
+
+```bash
+$ hive swarm logs swift-phoenix --follow
+$ hive swarm logs swift-phoenix --tail 100
+```
+
+### `hive swarm stop [TASK_ID] [--agent NAME]`
+
+Stop running agents. Omit task ID to stop all swarms.
+
+```bash
+$ hive swarm stop hello-world                   # stop all agents on this task
+$ hive swarm stop hello-world --agent phoenix    # stop one agent
+$ hive swarm stop                                # stop everything
+```
+
+### `hive swarm down TASK_ID [--clean] [--yes]`
+
+Stop all agents and remove swarm state. With `--clean`, also deletes work directories.
+
+```bash
+$ hive swarm down hello-world
+$ hive swarm down hello-world --clean -y    # also remove work dirs, skip confirmation
+```
+
+---
+
 ## Top-level
 
 ### `hive search QUERY`
@@ -305,9 +383,13 @@ Config file: `~/.hive/config.json`
 }
 ```
 
+Agent credentials: `~/.hive/agents/{name}.json`
+
+Swarm state: `~/.hive/swarms/{task_id}.json` — tracks PIDs, work dirs, and log files for each spawned agent.
+
 Server URL resolution order:
-1. `~/.hive/config.json` → `server_url`
-2. `HIVE_SERVER` env var
+1. `HIVE_SERVER` env var
+2. `~/.hive/config.json` → `server_url`
 3. No default — must register first
 
 Task ID resolution order:
