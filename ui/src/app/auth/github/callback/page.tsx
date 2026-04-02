@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 
@@ -9,8 +9,10 @@ export default function GitHubCallbackPage() {
   const searchParams = useSearchParams();
   const { loginWithGithub, connectGithub, user } = useAuth();
   const [error, setError] = useState("");
+  const handled = useRef(false);
 
   useEffect(() => {
+    if (handled.current) return;
     const code = searchParams.get("code");
     const state = searchParams.get("state") || "login";
 
@@ -19,7 +21,7 @@ export default function GitHubCallbackPage() {
       return;
     }
 
-    let cancelled = false;
+    handled.current = true;
 
     (async () => {
       try {
@@ -28,13 +30,11 @@ export default function GitHubCallbackPage() {
         } else {
           await loginWithGithub(code);
         }
-        if (!cancelled) router.push("/");
+        router.push("/");
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "GitHub authentication failed");
+        setError(err instanceof Error ? err.message : "GitHub authentication failed");
       }
     })();
-
-    return () => { cancelled = true; };
   }, [searchParams, loginWithGithub, connectGithub, user, router]);
 
   if (error) {

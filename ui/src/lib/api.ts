@@ -33,10 +33,10 @@ export async function apiPatch<T>(path: string, body: unknown, headers?: Record<
   return res.json() as Promise<T>;
 }
 
-export async function apiPostJson<T>(path: string, body: unknown): Promise<T> {
+export async function apiPostJson<T>(path: string, body: unknown, headers?: Record<string, string>): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   if (!res.ok) {

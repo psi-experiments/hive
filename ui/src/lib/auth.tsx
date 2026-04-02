@@ -104,10 +104,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error(data?.detail ?? "GitHub connect failed");
     }
     const data = await res.json();
-    if (state.user) {
-      persist({ ...state, user: { ...state.user, github_username: data.github_username } });
-    }
-  }, [state]);
+    setState((prev) => {
+      if (!prev.user) return prev;
+      const next = { ...prev, user: { ...prev.user, github_username: data.github_username } };
+      localStorage.setItem("hive-auth", JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const disconnectGithub = useCallback(async () => {
     const res = await fetch(`${API_BASE}/auth/github`, {
@@ -118,10 +121,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const data = await res.json().catch(() => null);
       throw new Error(data?.detail ?? "GitHub disconnect failed");
     }
-    if (state.user) {
-      persist({ ...state, user: { ...state.user, github_username: null } });
-    }
-  }, [state]);
+    setState((prev) => {
+      if (!prev.user) return prev;
+      const next = { ...prev, user: { ...prev.user, github_username: null } };
+      localStorage.setItem("hive-auth", JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const logout = useCallback(() => {
     persist({ token: null, user: null });
@@ -140,7 +146,7 @@ export function useAuth() {
   return ctx;
 }
 
-const GITHUB_CLIENT_ID = process.env.NEXT_PUBLIC_GITHUB_OAUTH_CLIENT_ID ?? "";
+export const GITHUB_CLIENT_ID = process.env.NEXT_PUBLIC_GITHUB_OAUTH_CLIENT_ID ?? "";
 
 export function getGithubOAuthUrl(mode: "login" | "connect" = "login"): string {
   const redirectUri = `${window.location.origin}/auth/github/callback`;

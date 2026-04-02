@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import bcrypt
+import httpx
 import jwt
 import psycopg.errors
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
@@ -22,6 +23,32 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
 GITHUB_OAUTH_CLIENT_ID = os.environ.get("GITHUB_OAUTH_CLIENT_ID", "")
 GITHUB_OAUTH_CLIENT_SECRET = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET", "")
+
+
+def _gh_user_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+
+def _exchange_github_code(code: str) -> tuple[str, int, str]:
+    if not GITHUB_OAUTH_CLIENT_ID or not GITHUB_OAUTH_CLIENT_SECRET:
+        raise HTTPException(501, "GitHub OAuth not configured")
+    resp = httpx.post("https://github.com/login/oauth/access_token", json={
+        "client_id": GITHUB_OAUTH_CLIENT_ID,
+        "client_secret": GITHUB_OAUTH_CLIENT_SECRET,
+        "code": code,
+    }, headers={"Accept": "application/json"}, timeout=15)
+    if resp.status_code != 200:
+        raise HTTPException(502, "GitHub OAuth exchange failed")
+    data = resp.json()
+    gh_token = data.get("access_token")
+    if not gh_token:
+        raise HTTPException(400, data.get("error_description", "OAuth exchange failed"))
+    gh_user = httpx.get("https://api.github.com/user", headers=_gh_user_headers(gh_token), timeout=15).json()
+    gh_id = gh_user.get("id")
+    gh_username = gh_user.get("login", "")
+    if not gh_id:
+        raise HTTPException(502, "failed to fetch GitHub user info")
+    return gh_token, gh_id, gh_username
 
 
 def _hash_password(password: str) -> str:
@@ -241,47 +268,22 @@ async def auth_claim(body: dict[str, Any], user: dict = Depends(require_user)):
 
 @router.post("/auth/github")
 async def auth_github(body: dict[str, Any]):
-    """Exchange GitHub OAuth code for a Hive JWT. Creates or links user account."""
     code = body.get("code", "")
     if not code:
         raise HTTPException(400, "code required")
-    if not GITHUB_OAUTH_CLIENT_ID or not GITHUB_OAUTH_CLIENT_SECRET:
-        raise HTTPException(501, "GitHub OAuth not configured")
-    import httpx
-    resp = httpx.post("https://github.com/login/oauth/access_token", json={
-        "client_id": GITHUB_OAUTH_CLIENT_ID,
-        "client_secret": GITHUB_OAUTH_CLIENT_SECRET,
-        "code": code,
-    }, headers={"Accept": "application/json"}, timeout=15)
-    if resp.status_code != 200:
-        raise HTTPException(502, "GitHub OAuth exchange failed")
-    data = resp.json()
-    gh_token = data.get("access_token")
-    if not gh_token:
-        raise HTTPException(400, data.get("error_description", "OAuth exchange failed"))
-    gh_user = httpx.get("https://api.github.com/user", headers={
-        "Authorization": f"Bearer {gh_token}",
-        "Accept": "application/vnd.github+json",
-    }, timeout=15).json()
-    gh_id = gh_user.get("id")
-    gh_username = gh_user.get("login", "")
-    if not gh_id:
-        raise HTTPException(502, "failed to fetch GitHub user info")
-    # Try to get email from GitHub (may need separate call if private)
-    gh_email = gh_user.get("email")
-    if not gh_email:
-        emails_resp = httpx.get("https://api.github.com/user/emails", headers={
-            "Authorization": f"Bearer {gh_token}",
-            "Accept": "application/vnd.github+json",
-        }, timeout=15)
-        if emails_resp.status_code == 200:
-            for e in emails_resp.json():
-                if e.get("primary"):
-                    gh_email = e["email"]
-                    break
-    if not gh_email:
-        gh_email = f"{gh_username}@users.noreply.github.com"
-    gh_email = gh_email.lower()
+    gh_token, gh_id, gh_username = await asyncio.to_thread(_exchange_github_code, code)
+    # Fetch email (may need separate call if private)
+    def _fetch_email():
+        user_resp = httpx.get("https://api.github.com/user", headers=_gh_user_headers(gh_token), timeout=15).json()
+        email = user_resp.get("email")
+        if not email:
+            emails_resp = httpx.get("https://api.github.com/user/emails", headers=_gh_user_headers(gh_token), timeout=15)
+            if emails_resp.status_code == 200:
+                for e in emails_resp.json():
+                    if e.get("primary"):
+                        return e["email"]
+        return email or f"{gh_username}@users.noreply.github.com"
+    gh_email = (await asyncio.to_thread(_fetch_email)).lower()
     async with get_db() as conn:
         # Check if user with this github_id already exists
         row = await (await conn.execute(
@@ -320,32 +322,10 @@ async def auth_github(body: dict[str, Any]):
 
 @router.post("/auth/github/connect")
 async def auth_github_connect(body: dict[str, Any], user: dict = Depends(require_user)):
-    """Connect GitHub to an existing logged-in user account."""
     code = body.get("code", "")
     if not code:
         raise HTTPException(400, "code required")
-    if not GITHUB_OAUTH_CLIENT_ID or not GITHUB_OAUTH_CLIENT_SECRET:
-        raise HTTPException(501, "GitHub OAuth not configured")
-    import httpx
-    resp = httpx.post("https://github.com/login/oauth/access_token", json={
-        "client_id": GITHUB_OAUTH_CLIENT_ID,
-        "client_secret": GITHUB_OAUTH_CLIENT_SECRET,
-        "code": code,
-    }, headers={"Accept": "application/json"}, timeout=15)
-    if resp.status_code != 200:
-        raise HTTPException(502, "GitHub OAuth exchange failed")
-    data = resp.json()
-    gh_token = data.get("access_token")
-    if not gh_token:
-        raise HTTPException(400, data.get("error_description", "OAuth exchange failed"))
-    gh_user = httpx.get("https://api.github.com/user", headers={
-        "Authorization": f"Bearer {gh_token}",
-        "Accept": "application/vnd.github+json",
-    }, timeout=15).json()
-    gh_id = gh_user.get("id")
-    gh_username = gh_user.get("login", "")
-    if not gh_id:
-        raise HTTPException(502, "failed to fetch GitHub user info")
+    gh_token, gh_id, gh_username = await asyncio.to_thread(_exchange_github_code, code)
     user_id = int(user["sub"])
     async with get_db() as conn:
         # Check if this GitHub account is already linked to another user
@@ -363,7 +343,6 @@ async def auth_github_connect(body: dict[str, Any], user: dict = Depends(require
 
 @router.delete("/auth/github")
 async def auth_github_disconnect(user: dict = Depends(require_user)):
-    """Disconnect GitHub from the current user account."""
     user_id = int(user["sub"])
     async with get_db() as conn:
         row = await (await conn.execute(
@@ -380,7 +359,6 @@ async def auth_github_disconnect(user: dict = Depends(require_user)):
 
 @router.get("/auth/github/repos")
 async def auth_github_repos(user: dict = Depends(require_user), page: int = 1, per_page: int = 30):
-    """List the authenticated user's GitHub repos (requires connected GitHub account)."""
     user_id = int(user["sub"])
     async with get_db() as conn:
         row = await (await conn.execute(
@@ -388,22 +366,21 @@ async def auth_github_repos(user: dict = Depends(require_user), page: int = 1, p
         )).fetchone()
     if not row or not row["github_token"]:
         raise HTTPException(400, "GitHub not connected")
-    import httpx
-    resp = httpx.get("https://api.github.com/user/repos", params={
-        "sort": "updated", "per_page": min(per_page, 100), "page": page,
-        "affiliation": "owner,collaborator,organization_member",
-    }, headers={
-        "Authorization": f"Bearer {row['github_token']}",
-        "Accept": "application/vnd.github+json",
-    }, timeout=15)
-    if resp.status_code == 401:
-        raise HTTPException(401, "GitHub token expired — please reconnect")
-    if resp.status_code != 200:
-        raise HTTPException(502, "failed to fetch repos from GitHub")
-    repos = [{"full_name": r["full_name"], "name": r["name"], "private": r["private"],
-              "description": r.get("description"), "url": r["html_url"],
-              "default_branch": r["default_branch"], "updated_at": r["updated_at"]}
-             for r in resp.json()]
+    gh_token = row["github_token"]
+    def _fetch():
+        resp = httpx.get("https://api.github.com/user/repos", params={
+            "sort": "updated", "per_page": min(per_page, 100), "page": page,
+            "affiliation": "owner,collaborator,organization_member",
+        }, headers=_gh_user_headers(gh_token), timeout=15)
+        if resp.status_code == 401:
+            raise HTTPException(401, "GitHub token expired — please reconnect")
+        if resp.status_code != 200:
+            raise HTTPException(502, "failed to fetch repos from GitHub")
+        return [{"full_name": r["full_name"], "name": r["name"], "private": r["private"],
+                 "description": r.get("description"), "url": r["html_url"],
+                 "default_branch": r["default_branch"], "updated_at": r["updated_at"]}
+                for r in resp.json()]
+    repos = await asyncio.to_thread(_fetch)
     return {"repos": repos, "page": page}
 
 
@@ -531,7 +508,6 @@ async def create_task(
 
 @router.post("/tasks/private", status_code=201)
 async def create_private_task(body: dict[str, Any], user: dict = Depends(require_user)):
-    """Create a private task from the user's GitHub repo."""
     repo_full_name = body.get("repo", "").strip()
     task_id = body.get("id", "").strip()
     task_name = body.get("name", "").strip()
@@ -547,39 +523,30 @@ async def create_private_task(body: dict[str, Any], user: dict = Depends(require
     if description:
         _validate_task_description(description)
     user_id = int(user["sub"])
-    # Get user's GitHub token
     async with get_db() as conn:
         row = await (await conn.execute(
             "SELECT github_token FROM users WHERE id = %s", (user_id,)
         )).fetchone()
-    if not row or not row["github_token"]:
-        raise HTTPException(400, "GitHub not connected — connect GitHub first")
-    gh_token = row["github_token"]
-    # Validate repo access and check for required files
-    import httpx
-    gh_headers = {"Authorization": f"Bearer {gh_token}", "Accept": "application/vnd.github+json"}
-    repo_resp = httpx.get(f"https://api.github.com/repos/{repo_full_name}", headers=gh_headers, timeout=15)
-    if repo_resp.status_code == 404:
-        raise HTTPException(404, "repo not found or no access")
-    if repo_resp.status_code == 401:
-        raise HTTPException(401, "GitHub token expired — please reconnect")
-    if repo_resp.status_code != 200:
-        raise HTTPException(502, "failed to fetch repo from GitHub")
-    repo_data = repo_resp.json()
-    repo_url = repo_data["html_url"]
-    # Check required files exist
-    missing = []
-    for path in ["program.md", "eval/eval.sh"]:
-        check = httpx.get(
-            f"https://api.github.com/repos/{repo_full_name}/contents/{path}?ref={branch}",
-            headers=gh_headers, timeout=15,
-        )
-        if check.status_code != 200:
-            missing.append(path)
-    if missing:
-        raise HTTPException(400, f"repo is missing required files: {', '.join(missing)}")
-    # Create task
-    async with get_db() as conn:
+        if not row or not row["github_token"]:
+            raise HTTPException(400, "GitHub not connected — connect GitHub first")
+        gh_token = row["github_token"]
+        # Validate repo access and check required files (in thread to avoid blocking)
+        def _validate_repo():
+            headers = _gh_user_headers(gh_token)
+            repo_resp = httpx.get(f"https://api.github.com/repos/{repo_full_name}", headers=headers, timeout=15)
+            if repo_resp.status_code == 404:
+                raise HTTPException(404, "repo not found or no access")
+            if repo_resp.status_code == 401:
+                raise HTTPException(401, "GitHub token expired — please reconnect")
+            if repo_resp.status_code != 200:
+                raise HTTPException(502, "failed to fetch repo from GitHub")
+            missing = [p for p in ["program.md", "eval/eval.sh"]
+                       if httpx.get(f"https://api.github.com/repos/{repo_full_name}/contents/{p}?ref={branch}",
+                                    headers=headers, timeout=15).status_code != 200]
+            if missing:
+                raise HTTPException(400, f"repo is missing required files: {', '.join(missing)}")
+            return repo_resp.json()["html_url"]
+        repo_url = await asyncio.to_thread(_validate_repo)
         if await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
             raise HTTPException(409, f"task '{task_id}' already exists")
         await conn.execute(
