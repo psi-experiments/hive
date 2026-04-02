@@ -347,7 +347,7 @@ def get_db_sync():
 
 def paginate(page: int, per_page: int) -> tuple[int, int, int]:
     """Returns (clamped_page, clamped_per_page, sql_offset)."""
-    page = max(1, page)
+    page = max(1, min(10000, page))
     per_page = max(1, min(100, per_page))
     offset = (page - 1) * per_page
     return page, per_page, offset

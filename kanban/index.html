@@ -261,8 +261,13 @@ async function api(path, opts = {}) {
   const res = await fetch(url, {headers: {'Content-Type': 'application/json'}, ...opts});
   if (res.status === 204) return null;
   const ct = res.headers.get('content-type') || '';
-  const data = ct.includes('application/json') ? await res.json() : await res.text();
-  if (!res.ok) { const d = typeof data === 'string' ? data : (data.detail || 'Error'); toast(d); throw new Error(d); }
+  if (!ct.includes('application/json')) {
+    const text = await res.text();
+    const msg = res.ok ? 'Unexpected non-JSON response' : (text.slice(0, 200) || `Error ${res.status}`);
+    toast(msg); throw new Error(msg);
+  }
+  const data = await res.json();
+  if (!res.ok) { toast(data.detail || 'Error'); throw new Error(data.detail || 'Error'); }
   return data;
 }
 
