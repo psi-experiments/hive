@@ -12,6 +12,7 @@ header h1{font-size:18px;font-weight:600}
 header select,header input{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;font-size:13px}
 header select{min-width:180px}
 header input{width:200px}
+#apiBaseInput{width:240px}
 .toolbar{margin-left:auto;display:flex;gap:8px}
 .btn{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:6px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px}
 .btn:hover{border-color:var(--muted)}
@@ -68,9 +69,11 @@ header input{width:200px}
 
 <header>
   <h1>Hive Kanban</h1>
+  <input id="apiBaseInput" placeholder="API target">
   <select id="taskSelect"><option value="">Select task...</option></select>
   <input id="tokenInput" placeholder="Agent token" value="local-dev">
   <div class="toolbar">
+    <button class="btn" onclick="applyApiTarget()">Set API</button>
     <button class="btn btn-primary" onclick="openCreateModal()">+ New Item</button>
   </div>
 </header>
@@ -108,6 +111,7 @@ header input{width:200px}
 <div class="toast" id="toast"></div>
 
 <script>
+const API_BASE_STORAGE_KEY = 'hive-kanban-api-base';
 const STATUSES = ['backlog','in_progress','review','archived'];
 const STATUS_LABELS = {backlog:'Backlog',in_progress:'In Progress',review:'Review',archived:'Archived'};
 let currentTask = '';
@@ -118,11 +122,29 @@ let suppressClickUntil = 0;
 const $ = id => document.getElementById(id);
 const token = () => $('tokenInput').value;
 
-function apiBase() {
+function defaultApiBase() {
   const isLocalHost = ['127.0.0.1', 'localhost', '::1'].includes(location.hostname);
   if (location.protocol === 'file:') return 'http://127.0.0.1:8000';
   if (isLocalHost && location.port !== '8000') return 'http://127.0.0.1:8000';
-  return '';
+  return location.origin;
+}
+
+function normalizeApiBase(raw) {
+  return (raw || '').trim().replace(/\/+$/,'');
+}
+
+function apiBase() {
+  return normalizeApiBase($('apiBaseInput').value) || defaultApiBase();
+}
+
+function applyApiTarget() {
+  const value = normalizeApiBase($('apiBaseInput').value);
+  if (value) localStorage.setItem(API_BASE_STORAGE_KEY, value);
+  else localStorage.removeItem(API_BASE_STORAGE_KEY);
+  $('apiBaseInput').value = value || defaultApiBase();
+  toast(`API target: ${apiBase()}`);
+  loadTasks();
+  loadItems();
 }
 
 function toast(msg) {
@@ -339,8 +361,15 @@ async function deleteComment(itemId, commentId) {
 }
 
 // Init
+$('apiBaseInput').value = normalizeApiBase(localStorage.getItem(API_BASE_STORAGE_KEY)) || defaultApiBase();
 $('taskSelect').onchange = e => { currentTask = e.target.value; loadItems(); };
 $('tokenInput').onchange = () => loadItems();
+$('apiBaseInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    applyApiTarget();
+  }
+});
 document.onkeydown = e => { if (e.key === 'Escape') closeModal(); };
 loadTasks();
 </script>
