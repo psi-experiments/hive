@@ -249,6 +249,16 @@ def _ensure_postgres_migrations(conn) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN github_token TEXT")
         conn.execute("ALTER TABLE users ADD COLUMN github_connected_at TIMESTAMPTZ")
         conn.execute("ALTER TABLE users ALTER COLUMN password DROP NOT NULL")
+    # Private task columns on tasks
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'tasks' AND column_name = 'task_type'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'public'")
+        conn.execute("ALTER TABLE tasks ADD COLUMN owner_id INTEGER REFERENCES users(id)")
+        conn.execute("ALTER TABLE tasks ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'")
+        conn.execute("ALTER TABLE tasks ADD COLUMN source_repo TEXT")
 
 
 # --- Async connection pool (one per worker process) ---

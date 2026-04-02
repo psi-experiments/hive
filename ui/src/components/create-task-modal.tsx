@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { apiPost, apiFetch } from "@/lib/api";
-import { getAuthHeader } from "@/lib/auth";
+import { getAuthHeader, useAuth } from "@/lib/auth";
+import { GitHubRepoPicker } from "@/components/github-repo-picker";
 
 interface CreateTaskModalProps {
   onClose: () => void;
@@ -24,10 +25,13 @@ function FieldError({ msg }: { msg: string | null }) {
 }
 
 export function CreateTaskModal({ onClose, onCreated }: CreateTaskModalProps) {
+  const { user } = useAuth();
+  const [mode, setMode] = useState<"upload" | "github">("upload");
   const [taskId, setTaskId] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [selectedRepo, setSelectedRepo] = useState<{ full_name: string; name: string; default_branch: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitResult, setSubmitResult] = useState<SubmitResult | null>(null);
@@ -40,8 +44,8 @@ export function CreateTaskModal({ onClose, onCreated }: CreateTaskModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isDirty = useMemo(
-    () => !!(taskId || name || description || file),
-    [taskId, name, description, file],
+    () => !!(taskId || name || description || file || selectedRepo),
+    [taskId, name, description, file, selectedRepo],
   );
 
   const safeClose = useCallback(() => {
@@ -70,6 +74,14 @@ export function CreateTaskModal({ onClose, onCreated }: CreateTaskModalProps) {
       : description.length > DESCRIPTION_MAX_LENGTH
         ? `Description must be ${DESCRIPTION_MAX_LENGTH} characters or fewer.`
         : null;
+    if (mode === "github") {
+      const repoErr = !selectedRepo ? "Select a GitHub repository." : null;
+      setFieldError("taskId", idErr);
+      setFieldError("name", nameErr);
+      setFieldError("description", descErr);
+      setFieldError("repo", repoErr);
+      return !idErr && !nameErr && !descErr && !repoErr;
+    }
     const fileErr = !file ? "Upload a zip file containing the task." : null;
     setFieldError("taskId", idErr);
     setFieldError("name", nameErr);
@@ -133,14 +145,36 @@ export function CreateTaskModal({ onClose, onCreated }: CreateTaskModalProps) {
     setSubmitError(null);
     setSubmitting(true);
     try {
-      const formData = new FormData();
-      formData.append("id", taskId.trim());
-      formData.append("name", name.trim());
-      formData.append("description", description.trim());
-      formData.append("archive", file!);
-      const result = await apiPost<SubmitResult>("/tasks", formData, getAuthHeader());
-      setSubmitResult(result);
-      onCreated();
+      if (mode === "github") {
+        const API_BASE = process.env.NEXT_PUBLIC_HIVE_SERVER ?? "/api";
+        const res = await fetch(`${API_BASE}/tasks/private`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeader() },
+          body: JSON.stringify({
+            id: taskId.trim(),
+            name: name.trim(),
+            description: description.trim(),
+            repo: selectedRepo!.full_name,
+            branch: selectedRepo!.default_branch,
+          }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.detail ?? "Failed to create task");
+        }
+        const result = await res.json();
+        setSubmitResult({ ...result, repo_url: result.repo_url });
+        onCreated();
+      } else {
+        const formData = new FormData();
+        formData.append("id", taskId.trim());
+        formData.append("name", name.trim());
+        formData.append("description", description.trim());
+        formData.append("archive", file!);
+        const result = await apiPost<SubmitResult>("/tasks", formData, getAuthHeader());
+        setSubmitResult(result);
+        onCreated();
+      }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Failed to create task");
     } finally {
@@ -235,7 +269,59 @@ export function CreateTaskModal({ onClose, onCreated }: CreateTaskModalProps) {
           ) : (
             /* ─── Form ─── */
             <div className="space-y-4">
-              {/* File upload */}
+              {/* Mode tabs */}
+              {user?.github_username && (
+                <div className="flex border-b border-[var(--color-border)] -mx-6 px-6">
+                  <button
+                    type="button"
+                    onClick={() => setMode("upload")}
+                    className={`px-4 py-2 text-xs font-medium transition-colors border-b-2 ${
+                      mode === "upload"
+                        ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                        : "border-transparent text-[var(--color-text-tertiary)] hover:text-[var(--color-text)]"
+                    }`}
+                  >
+                    Upload Archive
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode("github")}
+                    className={`px-4 py-2 text-xs font-medium transition-colors border-b-2 flex items-center gap-1.5 ${
+                      mode === "github"
+                        ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                        : "border-transparent text-[var(--color-text-tertiary)] hover:text-[var(--color-text)]"
+                    }`}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+                    </svg>
+                    From GitHub
+                  </button>
+                </div>
+              )}
+
+              {/* GitHub repo picker */}
+              {mode === "github" ? (
+                <div>
+                  <label className={labelCls}>Repository</label>
+                  <GitHubRepoPicker
+                    selected={selectedRepo?.full_name}
+                    onSelect={(repo) => {
+                      setSelectedRepo(repo);
+                      setFieldError("repo", null);
+                      if (!taskId || taskId === selectedRepo?.name.toLowerCase().replace(/[^a-z0-9-]/g, "-")) {
+                        const slug = repo.name.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                        handleTaskIdChange(slug);
+                      }
+                      if (!description && repo.description) {
+                        setDescription(repo.description.slice(0, DESCRIPTION_MAX_LENGTH));
+                      }
+                    }}
+                  />
+                  <FieldError msg={errors.repo ?? null} />
+                </div>
+              ) : (
+              /* File upload */
               <div>
                 <label className={labelCls}>Task Archive</label>
                 <div
@@ -271,6 +357,7 @@ export function CreateTaskModal({ onClose, onCreated }: CreateTaskModalProps) {
                 />
                 <FieldError msg={errors.file ?? null} />
               </div>
+              )}
 
               <div>
                 <label className={labelCls}>Task ID</label>

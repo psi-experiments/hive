@@ -529,6 +529,70 @@ async def create_task(
     return JSONResponse({"id": id, "name": name, "repo_url": repo_url, "status": "active"}, status_code=201)
 
 
+@router.post("/tasks/private", status_code=201)
+async def create_private_task(body: dict[str, Any], user: dict = Depends(require_user)):
+    """Create a private task from the user's GitHub repo."""
+    repo_full_name = body.get("repo", "").strip()
+    task_id = body.get("id", "").strip()
+    task_name = body.get("name", "").strip()
+    description = body.get("description", "").strip()
+    branch = body.get("branch", "main").strip()
+    if not repo_full_name:
+        raise HTTPException(400, "repo is required (e.g. 'owner/repo-name')")
+    if not task_id:
+        raise HTTPException(400, "task id is required")
+    _validate_task_id(task_id)
+    if not task_name:
+        task_name = task_id
+    if description:
+        _validate_task_description(description)
+    user_id = int(user["sub"])
+    # Get user's GitHub token
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT github_token FROM users WHERE id = %s", (user_id,)
+        )).fetchone()
+    if not row or not row["github_token"]:
+        raise HTTPException(400, "GitHub not connected — connect GitHub first")
+    gh_token = row["github_token"]
+    # Validate repo access and check for required files
+    import httpx
+    gh_headers = {"Authorization": f"Bearer {gh_token}", "Accept": "application/vnd.github+json"}
+    repo_resp = httpx.get(f"https://api.github.com/repos/{repo_full_name}", headers=gh_headers, timeout=15)
+    if repo_resp.status_code == 404:
+        raise HTTPException(404, "repo not found or no access")
+    if repo_resp.status_code == 401:
+        raise HTTPException(401, "GitHub token expired — please reconnect")
+    if repo_resp.status_code != 200:
+        raise HTTPException(502, "failed to fetch repo from GitHub")
+    repo_data = repo_resp.json()
+    repo_url = repo_data["html_url"]
+    # Check required files exist
+    missing = []
+    for path in ["program.md", "eval/eval.sh"]:
+        check = httpx.get(
+            f"https://api.github.com/repos/{repo_full_name}/contents/{path}?ref={branch}",
+            headers=gh_headers, timeout=15,
+        )
+        if check.status_code != 200:
+            missing.append(path)
+    if missing:
+        raise HTTPException(400, f"repo is missing required files: {', '.join(missing)}")
+    # Create task
+    async with get_db() as conn:
+        if await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
+            raise HTTPException(409, f"task '{task_id}' already exists")
+        await conn.execute(
+            "INSERT INTO tasks (id, name, description, repo_url, task_type, owner_id, visibility, source_repo, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (task_id, task_name, description, repo_url, "private", user_id, "private", repo_full_name, now()),
+        )
+    return JSONResponse({
+        "id": task_id, "name": task_name, "repo_url": repo_url,
+        "task_type": "private", "status": "active",
+    }, status_code=201)
+
+
 @router.patch("/tasks/{task_id}")
 async def update_task(task_id: str, body: dict[str, Any], token: str = Query(...)):
     allowed = {"name", "description", "config"}
@@ -553,13 +617,27 @@ async def sync_tasks(x_admin_key: str = Header(""), authorization: str = Header(
 
 
 @router.get("/tasks")
-async def list_tasks(q: str | None = Query(None), page: int = Query(1), per_page: int = Query(20)):
+async def list_tasks(q: str | None = Query(None), page: int = Query(1), per_page: int = Query(20),
+                     authorization: str = Header("")):
     page, per_page, offset = paginate(page, per_page)
+    # Determine current user (if any) for private task visibility
+    user_id = None
+    if authorization.startswith("Bearer "):
+        try:
+            payload = _decode_jwt(authorization.removeprefix("Bearer ").strip())
+            user_id = int(payload["sub"])
+        except HTTPException:
+            pass
     async with get_db() as conn:
-        where, params = "1=1", []
+        where, params = "(t.visibility = 'public'", []
+        if user_id:
+            where += " OR t.owner_id = %s)"
+            params.append(user_id)
+        else:
+            where += ")"
         if q:
-            where = "t.search_vec @@ plainto_tsquery('english', %s)"
-            params = [q]
+            where += " AND t.search_vec @@ plainto_tsquery('english', %s)"
+            params.append(q)
         params.extend([per_page + 1, offset])
         rows = await (await conn.execute(
             f"SELECT t.*, COUNT(r.id) AS total_runs, MAX(r.score) AS best_score_calc,"
