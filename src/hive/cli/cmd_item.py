@@ -232,8 +232,15 @@ def item_delete(
     resp = httpx.delete(url, params={"token": token}, headers={"ngrok-skip-browser-warning": "1"}, timeout=30)
     if resp.status_code == 204:
         ok(f"Deleted {item_id}")
+    elif resp.status_code == 404:
+        raise click.ClickException(f"Item {item_id} not found")
+    elif resp.status_code == 409:
+        detail = resp.json().get("detail", "conflict")
+        raise click.ClickException(detail)
+    elif resp.status_code == 403:
+        raise click.ClickException("Only the creator can delete this item")
     else:
-        resp.raise_for_status()
+        raise click.ClickException(f"Server error {resp.status_code}: {resp.text}")
 
 
 @item_app.command("comment")
