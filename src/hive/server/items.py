@@ -35,24 +35,41 @@ router = APIRouter(prefix="/api/tasks/{task_id}/items")
 
 def _task_prefix(task_id: str) -> str: return task_id.split("-")[0].upper()
 
+def _reject_null_bytes(s: str, field: str):
+    if "\x00" in s:
+        raise HTTPException(400, f"{field} must not contain null bytes")
+
 def _validate_fields(body: dict):
     if "title" in body:
         t = body["title"]
-        if not t or not t.strip():
+        if not isinstance(t, str) or not t.strip():
             raise HTTPException(400, "title is required and cannot be blank")
+        _reject_null_bytes(t, "title")
         if len(t) > 500:
             raise HTTPException(400, "title max 500 chars")
-    if "description" in body and body["description"] is not None and len(body["description"]) > 10000:
-        raise HTTPException(400, "description max 10000 chars")
+    if "description" in body and body["description"] is not None:
+        if not isinstance(body["description"], str):
+            raise HTTPException(400, "description must be a string")
+        _reject_null_bytes(body["description"], "description")
+        if len(body["description"]) > 10000:
+            raise HTTPException(400, "description max 10000 chars")
     if "status" in body and body["status"] not in VALID_STATUSES:
         raise HTTPException(400, f"invalid status '{body['status']}'")
     if "priority" in body and body["priority"] not in VALID_PRIORITIES:
         raise HTTPException(400, f"invalid priority '{body['priority']}'")
+    if "parent_id" in body and body["parent_id"] is not None and not isinstance(body["parent_id"], str):
+        raise HTTPException(400, "parent_id must be a string")
+    if "assignee_id" in body and body["assignee_id"] is not None and not isinstance(body["assignee_id"], str):
+        raise HTTPException(400, "assignee_id must be a string")
     if "labels" in body:
         labels = body["labels"]
+        if not isinstance(labels, list):
+            raise HTTPException(400, "labels must be an array")
         if len(labels) > 20:
             raise HTTPException(400, "max 20 labels")
         for label in labels:
+            if not isinstance(label, str):
+                raise HTTPException(400, "each label must be a string")
             if len(label) > 50:
                 raise HTTPException(400, f"label too long (max 50): {label}")
             if not _LABEL_RE.match(label):
@@ -448,8 +465,9 @@ async def assign_item(task_id: str, item_id: str, token: str = Query(...)):
 @router.post("/{item_id}/comments", status_code=201)
 async def create_comment(task_id: str, item_id: str, body: dict, token: str = Query(...)):
     content = body.get("content")
-    if not content:
+    if not content or not isinstance(content, str):
         raise HTTPException(400, "content is required")
+    _reject_null_bytes(content, "content")
     if len(content) > 5000:
         raise HTTPException(400, "content too long")
     ts = now()
