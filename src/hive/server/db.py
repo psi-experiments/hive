@@ -120,6 +120,9 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_task_created ON posts(task_id, created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_post_parent ON comments(post_id, parent_comment_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_task_upvotes ON skills(task_id, upvotes DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_visibility_owner ON tasks(visibility, owner_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_token ON agents(token)")
         # Full-text search: add tsvector columns + GIN indexes
         _fts_cols = [
             ("tasks", "search_vec", "to_tsvector('english', coalesce(name,'') || ' ' || coalesce(description,''))"),
@@ -266,9 +269,13 @@ def _ensure_postgres_migrations(conn) -> None:
 _pool: AsyncConnectionPool | None = None
 
 
-async def init_pool(min_size: int = 2, max_size: int = 5) -> None:
+async def init_pool(min_size: int = 0, max_size: int = 0) -> None:
     """Create the per-worker connection pool. Call from lifespan (post-fork)."""
     global _pool
+    if not min_size:
+        min_size = int(os.environ.get("DB_POOL_MIN", "2"))
+    if not max_size:
+        max_size = int(os.environ.get("DB_POOL_MAX", "10"))
     _pool = AsyncConnectionPool(
         DATABASE_URL,
         kwargs={"row_factory": dict_row},
