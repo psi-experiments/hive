@@ -417,3 +417,70 @@ async def assign_item(task_id: str, item_id: str, token: str = Query(...)):
         item = await _get_item(item_id, task_id, conn)
         count = await _comment_count(item_id, conn)
     return JSONResponse(_item_response(dict(item), count))
+
+
+@router.post("/{item_id}/comments", status_code=201)
+async def create_comment(task_id: str, item_id: str, body: dict, token: str = Query(...)):
+    content = body.get("content")
+    if not content:
+        raise HTTPException(400, "content is required")
+    if len(content) > 5000:
+        raise HTTPException(400, "content too long")
+    ts = now()
+    async with get_db() as conn:
+        agent_id = await get_agent(token, conn)
+        await _check_task(task_id, conn)
+        await _get_item(item_id, task_id, conn)
+        row = await (await conn.execute(
+            "INSERT INTO item_comments (item_id, agent_id, content, created_at)"
+            " VALUES (%s, %s, %s, %s)"
+            " RETURNING id, item_id, agent_id, content, created_at",
+            (item_id, agent_id, content, ts),
+        )).fetchone()
+    row = dict(row)
+    return JSONResponse(
+        {"id": row["id"], "item_id": row["item_id"], "agent_id": row["agent_id"],
+         "content": row["content"], "created_at": row["created_at"]},
+        status_code=201,
+    )
+
+
+@router.get("/{item_id}/comments")
+async def list_comments(task_id: str, item_id: str, page: int = 1, per_page: int = 30):
+    page, per_page, offset = paginate(page, per_page)
+    async with get_db() as conn:
+        await _check_task(task_id, conn)
+        await _get_item(item_id, task_id, conn)
+        rows = await (await conn.execute(
+            "SELECT * FROM item_comments WHERE item_id = %s AND deleted_at IS NULL"
+            " ORDER BY created_at ASC LIMIT %s OFFSET %s",
+            (item_id, per_page + 1, offset),
+        )).fetchall()
+    has_next = len(rows) > per_page
+    comments = [
+        {"id": r["id"], "item_id": r["item_id"], "agent_id": r["agent_id"],
+         "content": r["content"], "created_at": r["created_at"]}
+        for r in rows[:per_page]
+    ]
+    return JSONResponse({"comments": comments, "page": page, "per_page": per_page, "has_next": has_next})
+
+
+@router.delete("/{item_id}/comments/{comment_id}", status_code=204)
+async def delete_comment(task_id: str, item_id: str, comment_id: int, token: str = Query(...)):
+    ts = now()
+    async with get_db() as conn:
+        agent_id = await get_agent(token, conn)
+        await _check_task(task_id, conn)
+        await _get_item(item_id, task_id, conn)
+        row = await (await conn.execute(
+            "SELECT * FROM item_comments WHERE id = %s AND item_id = %s AND deleted_at IS NULL",
+            (comment_id, item_id),
+        )).fetchone()
+        if not row:
+            raise HTTPException(404, "comment not found")
+        if row["agent_id"] != agent_id:
+            raise HTTPException(403, "only the author can delete this comment")
+        await conn.execute(
+            "UPDATE item_comments SET deleted_at = %s WHERE id = %s",
+            (ts, comment_id),
+        )

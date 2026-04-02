@@ -460,3 +460,137 @@ class TestAssignItem:
         resp = client.post("/api/tasks/gsm8k/items/GSM8K-1/assign", params={"token": token})
         assert resp.status_code == 200
         assert resp.json()["assignee_id"] == "agent-a"
+
+
+class TestComments:
+    def test_create_comment(self, client):
+        _post_task(client)
+        token = _register(client, "agent-a")
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        resp = client.post(
+            "/api/tasks/gsm8k/items/GSM8K-1/comments",
+            json={"content": "Hello"},
+            params={"token": token},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["content"] == "Hello"
+        assert data["agent_id"] == "agent-a"
+        assert data["item_id"] == "GSM8K-1"
+
+    def test_create_comment_missing_content(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        resp = client.post(
+            "/api/tasks/gsm8k/items/GSM8K-1/comments",
+            json={},
+            params={"token": token},
+        )
+        assert resp.status_code == 400
+
+    def test_comment_content_too_long(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        resp = client.post(
+            "/api/tasks/gsm8k/items/GSM8K-1/comments",
+            json={"content": "x" * 5001},
+            params={"token": token},
+        )
+        assert resp.status_code == 400
+
+    def test_list_comments(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        client.post(
+            "/api/tasks/gsm8k/items/GSM8K-1/comments",
+            json={"content": "First"},
+            params={"token": token},
+        )
+        client.post(
+            "/api/tasks/gsm8k/items/GSM8K-1/comments",
+            json={"content": "Second"},
+            params={"token": token},
+        )
+        resp = client.get("/api/tasks/gsm8k/items/GSM8K-1/comments")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["comments"]) == 2
+        assert data["comments"][0]["content"] == "First"
+        assert data["comments"][1]["content"] == "Second"
+        assert data["has_next"] is False
+
+    def test_comment_pagination(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        for i in range(3):
+            client.post(
+                "/api/tasks/gsm8k/items/GSM8K-1/comments",
+                json={"content": f"Comment {i}"},
+                params={"token": token},
+            )
+        resp = client.get("/api/tasks/gsm8k/items/GSM8K-1/comments", params={"page": 1, "per_page": 2})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["comments"]) == 2
+        assert data["has_next"] is True
+
+    def test_delete_comment(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        create_resp = client.post(
+            "/api/tasks/gsm8k/items/GSM8K-1/comments",
+            json={"content": "To delete"},
+            params={"token": token},
+        )
+        comment_id = create_resp.json()["id"]
+        resp = client.delete(
+            f"/api/tasks/gsm8k/items/GSM8K-1/comments/{comment_id}",
+            params={"token": token},
+        )
+        assert resp.status_code == 204
+        list_resp = client.get("/api/tasks/gsm8k/items/GSM8K-1/comments")
+        assert list_resp.json()["comments"] == []
+
+    def test_delete_comment_not_found(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        resp = client.delete(
+            "/api/tasks/gsm8k/items/GSM8K-1/comments/9999",
+            params={"token": token},
+        )
+        assert resp.status_code == 404
+
+    def test_delete_comment_only_author(self, client):
+        _post_task(client)
+        token_a = _register(client, "agent-a")
+        token_b = _register(client, "agent-b")
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token_a})
+        create_resp = client.post(
+            "/api/tasks/gsm8k/items/GSM8K-1/comments",
+            json={"content": "By A"},
+            params={"token": token_a},
+        )
+        comment_id = create_resp.json()["id"]
+        resp = client.delete(
+            f"/api/tasks/gsm8k/items/GSM8K-1/comments/{comment_id}",
+            params={"token": token_b},
+        )
+        assert resp.status_code == 403
+
+    def test_comment_count_in_item(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        client.post(
+            "/api/tasks/gsm8k/items/GSM8K-1/comments",
+            json={"content": "A comment"},
+            params={"token": token},
+        )
+        resp = client.get("/api/tasks/gsm8k/items/GSM8K-1")
+        assert resp.json()["comment_count"] == 1
