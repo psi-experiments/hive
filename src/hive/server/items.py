@@ -465,7 +465,7 @@ async def assign_item(task_id: str, item_id: str, token: str = Query(...)):
 @router.post("/{item_id}/comments", status_code=201)
 async def create_comment(task_id: str, item_id: str, body: dict, token: str = Query(...)):
     content = body.get("content")
-    if not content or not isinstance(content, str):
+    if not content or not isinstance(content, str) or not content.strip():
         raise HTTPException(400, "content is required")
     _reject_null_bytes(content, "content")
     if len(content) > 5000:
