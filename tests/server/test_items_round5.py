@@ -461,7 +461,7 @@ class TestUpdatedAtBehavior:
 
         patch_resp = client.patch(
             "/api/tasks/r5-task/items/R5-1",
-            json={"status": "done"},
+            json={"status": "archived"},
             params={"token": token},
         )
         assert patch_resp.status_code == 200

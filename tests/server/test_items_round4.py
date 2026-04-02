@@ -514,49 +514,49 @@ class TestFilterCombinations:
     def _setup(self, client, token):
         """Create items with various statuses, assignees, and labels for filter tests."""
         _post_task(client)
-        # item 1: status=todo, no assignee, labels=[bug]
-        _create_item(client, token=token, title="item-1", status="todo", labels=["bug"])
-        # item 2: status=done, no assignee, labels=[bug]
-        _create_item(client, token=token, title="item-2", status="done", labels=["bug"])
-        # item 3: status=todo, assignee=token, labels=[bug]
-        _create_item(client, token=token, title="item-3", status="todo",
+        # item 1: status=backlog, no assignee, labels=[bug]
+        _create_item(client, token=token, title="item-1", status="backlog", labels=["bug"])
+        # item 2: status=archived, no assignee, labels=[bug]
+        _create_item(client, token=token, title="item-2", status="archived", labels=["bug"])
+        # item 3: status=review, assignee=token, labels=[bug]
+        _create_item(client, token=token, title="item-3", status="review",
                      assignee_id=token, labels=["bug"])
-        # item 4: status=todo, no assignee, labels=[feature]
-        _create_item(client, token=token, title="item-4", status="todo", labels=["feature"])
+        # item 4: status=backlog, no assignee, labels=[feature]
+        _create_item(client, token=token, title="item-4", status="backlog", labels=["feature"])
         # item 5: status=in_progress, no assignee, labels=[bug]
         _create_item(client, token=token, title="item-5", status="in_progress", labels=["bug"])
 
     def test_negated_status_filter(self, client):
-        """status=!done should return all items except done ones."""
+        """status=!archived should return all items except archived ones."""
         token = _register(client, "r4-filter-agent")
         self._setup(client, token)
-        resp = client.get("/api/tasks/r4-task/items", params={"status": "!done"})
+        resp = client.get("/api/tasks/r4-task/items", params={"status": "!archived"})
         assert resp.status_code == 200
         items = resp.json()["items"]
-        assert all(i["status"] != "done" for i in items)
+        assert all(i["status"] != "archived" for i in items)
         statuses = {i["status"] for i in items}
-        assert "done" not in statuses
+        assert "archived" not in statuses
 
     def test_combined_filters_status_assignee_label(self, client):
-        """status=!done AND assignee=none AND label=bug — all three filters combined."""
+        """status=!archived AND assignee=none AND label=bug — all three filters combined."""
         token = _register(client, "r4-combo-agent")
         self._setup(client, token)
         resp = client.get(
             "/api/tasks/r4-task/items",
-            params={"status": "!done", "assignee": "none", "label": "bug"},
+            params={"status": "!archived", "assignee": "none", "label": "bug"},
         )
         assert resp.status_code == 200
         items = resp.json()["items"]
-        # All results: not done, unassigned, has bug label
+        # All results: not archived, unassigned, has bug label
         for item in items:
-            assert item["status"] != "done"
+            assert item["status"] != "archived"
             assert item["assignee_id"] is None
             assert "bug" in item["labels"]
-        # From setup: item-1 (todo, no-assignee, bug) and item-5 (in_progress, no-assignee, bug) match
+        # From setup: item-1 (backlog, no-assignee, bug) and item-5 (in_progress, no-assignee, bug) match
         ids = {i["id"] for i in items}
         assert "R4-1" in ids  # item-1
         assert "R4-5" in ids  # item-5
-        assert "R4-2" not in ids  # done
+        assert "R4-2" not in ids  # archived
         assert "R4-3" not in ids  # has assignee
         assert "R4-4" not in ids  # label=feature not bug
 

@@ -1,4 +1,5 @@
 import psycopg
+from datetime import datetime, timedelta, timezone
 
 import hive.server.db as _db
 
@@ -39,7 +40,7 @@ class TestCreateItem:
             json={
                 "title": "Full item",
                 "description": "desc",
-                "status": "todo",
+                "status": "in_progress",
                 "priority": "high",
                 "labels": ["bug", "urgent-fix"],
                 "assignee_id": "agent-a",
@@ -50,10 +51,11 @@ class TestCreateItem:
         data = resp.json()
         assert data["title"] == "Full item"
         assert data["description"] == "desc"
-        assert data["status"] == "todo"
+        assert data["status"] == "in_progress"
         assert data["priority"] == "high"
         assert data["labels"] == ["bug", "urgent-fix"]
         assert data["assignee_id"] == "agent-a"
+        assert data["assigned_at"] is not None
 
     def test_id_increments(self, client):
         _post_task(client)
@@ -153,24 +155,24 @@ class TestListItems:
     def test_filter_by_status(self, client):
         _post_task(client)
         token = _register(client)
-        client.post("/api/tasks/gsm8k/items", json={"title": "Todo item", "status": "todo"}, params={"token": token})
-        client.post("/api/tasks/gsm8k/items", json={"title": "Done item", "status": "done"}, params={"token": token})
-        resp = client.get("/api/tasks/gsm8k/items", params={"status": "todo"})
+        client.post("/api/tasks/gsm8k/items", json={"title": "In progress item", "status": "in_progress"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "Archived item", "status": "archived"}, params={"token": token})
+        resp = client.get("/api/tasks/gsm8k/items", params={"status": "in_progress"})
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["items"]) == 1
-        assert data["items"][0]["status"] == "todo"
+        assert data["items"][0]["status"] == "in_progress"
 
     def test_filter_status_negation(self, client):
         _post_task(client)
         token = _register(client)
-        client.post("/api/tasks/gsm8k/items", json={"title": "Todo item", "status": "todo"}, params={"token": token})
-        client.post("/api/tasks/gsm8k/items", json={"title": "Done item", "status": "done"}, params={"token": token})
-        resp = client.get("/api/tasks/gsm8k/items", params={"status": "!done"})
+        client.post("/api/tasks/gsm8k/items", json={"title": "Review item", "status": "review"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "Archived item", "status": "archived"}, params={"token": token})
+        resp = client.get("/api/tasks/gsm8k/items", params={"status": "!archived"})
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["items"]) == 1
-        assert data["items"][0]["status"] == "todo"
+        assert data["items"][0]["status"] == "review"
 
     def test_filter_assignee_none(self, client):
         _post_task(client)
@@ -325,7 +327,7 @@ class TestPatchItem:
         token = _register(client)
         resp = client.patch(
             "/api/tasks/gsm8k/items/GSM8K-999",
-            json={"status": "done"},
+            json={"status": "archived"},
             params={"token": token},
         )
         assert resp.status_code == 404
@@ -390,6 +392,50 @@ class TestAssignItem:
         resp = client.post("/api/tasks/gsm8k/items/GSM8K-1/assign", params={"token": token})
         assert resp.status_code == 200
         assert resp.json()["assignee_id"] == "agent-a"
+
+    def test_assign_archived_item_409(self, client):
+        _post_task(client)
+        token = _register(client, "agent-a")
+        client.post(
+            "/api/tasks/gsm8k/items",
+            json={"title": "Item", "status": "archived"},
+            params={"token": token},
+        )
+        resp = client.post("/api/tasks/gsm8k/items/GSM8K-1/assign", params={"token": token})
+        assert resp.status_code == 409
+
+    def test_expired_assignment_disappears_from_assignee_filter(self, client, monkeypatch):
+        _post_task(client)
+        token = _register(client, "agent-a")
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        assigned_at = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("hive.server.items.now", lambda: assigned_at)
+        client.post("/api/tasks/gsm8k/items/GSM8K-1/assign", params={"token": token})
+
+        expired_at = assigned_at + timedelta(hours=3)
+        monkeypatch.setattr("hive.server.items.now", lambda: expired_at)
+        resp = client.get("/api/tasks/gsm8k/items", params={"assignee": "agent-a"})
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+        unassigned = client.get("/api/tasks/gsm8k/items", params={"assignee": "none"})
+        assert unassigned.status_code == 200
+        assert unassigned.json()["items"][0]["assignee_id"] is None
+
+    def test_expired_assignment_can_be_taken_over(self, client, monkeypatch):
+        _post_task(client)
+        token_a = _register(client, "agent-a")
+        token_b = _register(client, "agent-b")
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token_a})
+        assigned_at = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("hive.server.items.now", lambda: assigned_at)
+        client.post("/api/tasks/gsm8k/items/GSM8K-1/assign", params={"token": token_a})
+
+        expired_at = assigned_at + timedelta(hours=3)
+        monkeypatch.setattr("hive.server.items.now", lambda: expired_at)
+        resp = client.post("/api/tasks/gsm8k/items/GSM8K-1/assign", params={"token": token_b})
+        assert resp.status_code == 200
+        assert resp.json()["assignee_id"] == "agent-b"
 
 
 class TestComments:

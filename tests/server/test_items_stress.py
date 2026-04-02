@@ -252,12 +252,12 @@ class TestEdgeCases:
         token = _register(client, "filter-agent")
         client.post(
             "/api/tasks/stress-task/items",
-            json={"title": "Match all", "status": "todo", "assignee_id": "filter-agent", "labels": ["bug"]},
+            json={"title": "Match all", "status": "review", "assignee_id": "filter-agent", "labels": ["bug"]},
             params={"token": token},
         )
         client.post(
             "/api/tasks/stress-task/items",
-            json={"title": "Only todo", "status": "todo"},
+            json={"title": "Only review", "status": "review"},
             params={"token": token},
         )
         client.post(
@@ -267,7 +267,7 @@ class TestEdgeCases:
         )
         resp = client.get(
             "/api/tasks/stress-task/items",
-            params={"status": "todo", "assignee": "filter-agent", "label": "bug"},
+            params={"status": "review", "assignee": "filter-agent", "label": "bug"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -275,16 +275,13 @@ class TestEdgeCases:
         assert data["items"][0]["title"] == "Match all"
 
     def test_negation_filter_nonexistent_status(self, client):
-        """Negation filter with a non-existent status should return all items."""
+        """Negation filter with a non-existent status should be rejected."""
         _post_task(client)
         token = _register(client)
-        client.post("/api/tasks/stress-task/items", json={"title": "item 1", "status": "todo"}, params={"token": token})
-        client.post("/api/tasks/stress-task/items", json={"title": "item 2", "status": "done"}, params={"token": token})
+        client.post("/api/tasks/stress-task/items", json={"title": "item 1", "status": "backlog"}, params={"token": token})
+        client.post("/api/tasks/stress-task/items", json={"title": "item 2", "status": "archived"}, params={"token": token})
         resp = client.get("/api/tasks/stress-task/items", params={"status": "!nonexistent"})
-        assert resp.status_code == 200
-        # Both items have status != "nonexistent", so both should appear
-        data = resp.json()
-        assert len(data["items"]) == 2
+        assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +333,7 @@ class TestAuthorization:
         _post_task(client)
         token = _register(client)
         client.post("/api/tasks/stress-task/items", json={"title": "item"}, params={"token": token})
-        resp = client.patch("/api/tasks/stress-task/items/STRESS-1", json={"status": "done"})
+        resp = client.patch("/api/tasks/stress-task/items/STRESS-1", json={"status": "archived"})
         assert resp.status_code == 422
 
     def test_missing_token_on_delete_returns_422(self, client):

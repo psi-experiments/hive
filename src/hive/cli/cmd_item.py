@@ -6,7 +6,7 @@ import typer
 
 from hive.cli.console import get_console
 from hive.cli.formatting import ok, empty, relative_time
-from hive.cli.helpers import _api, _task_id, _json_out, _server_url, _active_agent
+from hive.cli.helpers import _api, _task_id, _json_out, _server_url, _active_agent, _agent_id
 from hive.cli.state import _set_task, get_task, TaskOpt, JsonFlag
 
 item_app = typer.Typer(no_args_is_help=True)
@@ -18,11 +18,63 @@ def item_callback(task_opt: TaskOpt = None):
     _set_task(task_opt)
 
 
+def _list_items_data(
+    task_id: str,
+    *,
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    assignee: Optional[str] = None,
+    label: Optional[str] = None,
+    parent: Optional[str] = None,
+    sort: str = "recent",
+    page: int = 1,
+    per_page: int = 20,
+):
+    params = {"sort": sort, "page": page, "per_page": per_page}
+    if status is not None:
+        params["status"] = status
+    if priority is not None:
+        params["priority"] = priority
+    if assignee is not None:
+        params["assignee"] = assignee
+    if label is not None:
+        params["label"] = label
+    if parent is not None:
+        params["parent"] = parent
+    return _api("GET", f"/tasks/{task_id}/items", params=params)
+
+
+def _print_items(data, *, page: int):
+    items = data.get("items", data) if isinstance(data, dict) else data
+    if not items:
+        empty("No items.")
+        return
+    from rich.table import Table
+    console = get_console()
+    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    table.add_column("ID")
+    table.add_column("STATUS")
+    table.add_column("PRIORITY")
+    table.add_column("ASSIGNEE")
+    table.add_column("TITLE")
+    for item in items:
+        table.add_row(
+            item.get("slug") or str(item.get("id", "")),
+            item.get("status", ""),
+            item.get("priority", ""),
+            item.get("assignee_id") or "",
+            item.get("title", ""),
+        )
+    console.print(table)
+    if isinstance(data, dict) and data.get("has_next"):
+        click.echo(f"  page {page} -- more results available (--page {page + 1})")
+
+
 @item_app.command("create")
 def item_create(
     title: Annotated[str, typer.Option("--title", "-t", help="Item title")],
     description: Annotated[Optional[str], typer.Option("--description", "-d")] = None,
-    status: Annotated[str, typer.Option(help="backlog|todo|in_progress|done|cancelled")] = "backlog",
+    status: Annotated[str, typer.Option(help="backlog|in_progress|review|archived")] = "backlog",
     priority: Annotated[str, typer.Option(help="none|urgent|high|medium|low")] = "none",
     label: Annotated[Optional[list[str]], typer.Option("--label", "-l", help="Label (repeatable)")] = None,
     assignee: Annotated[Optional[str], typer.Option(help="Agent ID")] = None,
@@ -66,44 +118,53 @@ def item_list(
     """List work items."""
     _set_task(task_opt)
     task_id = _task_id(get_task())
-    params = {"sort": sort, "page": page, "per_page": per_page}
-    if status is not None:
-        params["status"] = status
-    if priority is not None:
-        params["priority"] = priority
-    if assignee is not None:
-        params["assignee"] = assignee
-    if label is not None:
-        params["label"] = label
-    if parent is not None:
-        params["parent"] = parent
-    data = _api("GET", f"/tasks/{task_id}/items", params=params)
+    data = _list_items_data(
+        task_id,
+        status=status,
+        priority=priority,
+        assignee=assignee,
+        label=label,
+        parent=parent,
+        sort=sort,
+        page=page,
+        per_page=per_page,
+    )
     if as_json:
         _json_out(data.get("items", data))
         return
-    items = data.get("items", data) if isinstance(data, dict) else data
-    if not items:
-        empty("No items.")
+    _print_items(data, page=page)
+
+
+@item_app.command("mine")
+def item_mine(
+    status: Annotated[Optional[str], typer.Option(help="Filter by status, prefix ! to negate")] = "!archived",
+    priority: Annotated[Optional[str], typer.Option()] = None,
+    label: Annotated[Optional[str], typer.Option()] = None,
+    parent: Annotated[Optional[str], typer.Option()] = None,
+    sort: Annotated[str, typer.Option(help="recent|updated|priority")] = "updated",
+    page: Annotated[int, typer.Option()] = 1,
+    per_page: Annotated[int, typer.Option()] = 20,
+    as_json: JsonFlag = False,
+    task_opt: TaskOpt = None,
+):
+    """List items assigned to the current agent."""
+    _set_task(task_opt)
+    task_id = _task_id(get_task())
+    data = _list_items_data(
+        task_id,
+        status=status,
+        priority=priority,
+        assignee=_agent_id(),
+        label=label,
+        parent=parent,
+        sort=sort,
+        page=page,
+        per_page=per_page,
+    )
+    if as_json:
+        _json_out(data.get("items", data))
         return
-    from rich.table import Table
-    console = get_console()
-    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
-    table.add_column("ID")
-    table.add_column("STATUS")
-    table.add_column("PRIORITY")
-    table.add_column("ASSIGNEE")
-    table.add_column("TITLE")
-    for item in items:
-        table.add_row(
-            item.get("slug") or str(item.get("id", "")),
-            item.get("status", ""),
-            item.get("priority", ""),
-            item.get("assignee_id") or "",
-            item.get("title", ""),
-        )
-    console.print(table)
-    if isinstance(data, dict) and data.get("has_next"):
-        click.echo(f"  page {page} -- more results available (--page {page + 1})")
+    _print_items(data, page=page)
 
 
 @item_app.command("view")
@@ -130,6 +191,11 @@ def item_view(
     console.print(f"\n=== {slug}: {item.get('title')} ===")
     assignee = item.get("assignee_id") or "unassigned"
     console.print(f"Status: {item.get('status')}  Priority: {item.get('priority')}  Assignee: {assignee}")
+    assigned_at = item.get("assigned_at")
+    if assigned_at:
+        assigned = relative_time(assigned_at)
+        expires = relative_time(item.get("assignment_expires_at", "")) if item.get("assignment_expires_at") else ""
+        console.print(f"Assigned: {assigned}  Expires: {expires}")
     labels = item.get("labels") or []
     if labels:
         console.print(f"Labels: {', '.join(labels)}")

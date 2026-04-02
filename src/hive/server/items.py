@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse as _BaseJSONResponse
@@ -26,14 +26,23 @@ def _parse_sort(raw: str, allowed: dict[str, str]) -> str:
         direction = "DESC"
     return f"{allowed.get(field, list(allowed.values())[0])} {direction}"
 
-VALID_STATUSES = {"backlog", "todo", "in_progress", "done", "cancelled"}
+VALID_STATUSES = {"backlog", "in_progress", "review", "archived"}
 VALID_PRIORITIES = {"none", "low", "medium", "high", "urgent"}
 _LABEL_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+ASSIGN_TTL = timedelta(hours=2)
 
 router = APIRouter(prefix="/api/tasks/{task_id}/items")
 
 
 def _task_prefix(task_id: str) -> str: return task_id.split("-")[0].upper()
+
+
+def _validate_status_filter(status: str | None):
+    if status is None:
+        return
+    value = status[1:] if status.startswith("!") else status
+    if value not in VALID_STATUSES:
+        raise HTTPException(400, "invalid status")
 
 def _reject_null_bytes(s: str, field: str):
     if "\x00" in s:
@@ -95,20 +104,21 @@ async def _comment_count(item_id: str, conn) -> int:
 
 
 _ITEM_KEYS = ["id", "task_id", "title", "description", "status", "priority",
-              "assignee_id", "parent_id", "labels", "created_by", "created_at", "updated_at"]
+              "assignee_id", "assigned_at", "parent_id", "labels", "created_by", "created_at", "updated_at"]
 
 def _item_response(item: dict, comment_count: int) -> dict:
     r = {k: item[k] for k in _ITEM_KEYS}
     r["labels"] = r["labels"] or []
     r["comment_count"] = comment_count
+    r["assignment_expires_at"] = r["assigned_at"] + ASSIGN_TTL if r["assigned_at"] else None
     return r
 
 
 _UPDATABLE_FIELDS = {"title", "description", "status", "priority", "assignee_id", "parent_id", "labels"}
 
 _INSERT_SQL = ("INSERT INTO items (id, seq, task_id, title, description, status, priority,"
-               " assignee_id, parent_id, labels, created_by, created_at, updated_at)"
-               " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)")
+               " assignee_id, assigned_at, parent_id, labels, created_by, created_at, updated_at)"
+               " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)")
 
 async def _validate_refs(body: dict, task_id: str, conn):
     if body.get("assignee_id"):
@@ -121,6 +131,24 @@ async def _validate_refs(body: dict, task_id: str, conn):
             raise HTTPException(404, f"parent item '{body['parent_id']}' not found")
         await _check_parent_depth(body["parent_id"], conn)
 
+def _apply_assignment_rules(body: dict, ts, existing: dict | None = None) -> dict:
+    updated = dict(body)
+    if updated.get("status") == "archived":
+        updated["assignee_id"] = None
+        updated["assigned_at"] = None
+        return updated
+    if "assignee_id" not in updated:
+        return updated
+    if updated["assignee_id"] is None:
+        updated["assigned_at"] = None
+        return updated
+    if existing and existing.get("assignee_id") == updated["assignee_id"] and existing.get("assigned_at") is not None:
+        updated["assigned_at"] = existing["assigned_at"]
+        return updated
+    updated["assigned_at"] = ts
+    return updated
+
+
 async def _insert_item(body: dict, task_id: str, agent_id: str, ts, conn) -> dict:
     seq_row = await (await conn.execute(
         "UPDATE tasks SET item_seq = item_seq + 1 WHERE id = %s RETURNING item_seq", (task_id,),
@@ -130,7 +158,7 @@ async def _insert_item(body: dict, task_id: str, agent_id: str, ts, conn) -> dic
     await conn.execute(_INSERT_SQL, (
         item_id, seq, task_id, body["title"], body.get("description"),
         body.get("status", "backlog"), body.get("priority", "none"),
-        body.get("assignee_id"), body.get("parent_id"), body.get("labels", []),
+        body.get("assignee_id"), body.get("assigned_at"), body.get("parent_id"), body.get("labels", []),
         agent_id, ts, ts,
     ))
     return dict(await (await conn.execute("SELECT * FROM items WHERE id = %s", (item_id,))).fetchone())
@@ -172,6 +200,28 @@ async def _check_parent_depth(parent_id: str, conn):
         raise HTTPException(400, "max depth of 5 exceeded")
 
 
+async def _expire_stale_assignments(conn, ts, task_id: str | None = None, item_id: str | None = None):
+    where = [
+        "deleted_at IS NULL",
+        "assignee_id IS NOT NULL",
+        "assigned_at IS NOT NULL",
+        "assigned_at <= %s",
+    ]
+    params: list = [ts - ASSIGN_TTL]
+    if task_id is not None:
+        where.append("task_id = %s")
+        params.append(task_id)
+    if item_id is not None:
+        where.append("id = %s")
+        params.append(item_id)
+    await conn.execute(
+        f"UPDATE items"
+        f" SET assignee_id = NULL, assigned_at = NULL, updated_at = %s"
+        f" WHERE {' AND '.join(where)}",
+        [ts, *params],
+    )
+
+
 @router.post("", status_code=201)
 async def create_item(task_id: str, body: dict, token: str = Query(...)):
     if not body.get("title") or not body["title"].strip():
@@ -182,6 +232,7 @@ async def create_item(task_id: str, body: dict, token: str = Query(...)):
         agent_id = await _get_agent(token, conn)
         await _check_task(task_id, conn)
         await _validate_refs(body, task_id, conn)
+        body = _apply_assignment_rules(body, ts)
         item = await _insert_item(body, task_id, agent_id, ts, conn)
     return JSONResponse(_item_response(dict(item), 0), status_code=201)
 
@@ -205,6 +256,7 @@ async def list_items(
     page: int = 1,
     per_page: int = 25,
 ):
+    _validate_status_filter(status)
     if sort.split(":")[0] == "priority" and ":" not in sort:
         sort = "priority:asc"
     order = _parse_sort(sort, _SORT_KEYS)
@@ -240,6 +292,7 @@ async def list_items(
 
     async with get_db() as conn:
         await _check_task(task_id, conn)
+        await _expire_stale_assignments(conn, now(), task_id=task_id)
         rows = await (await conn.execute(
             f"SELECT i.*,"
             f" (SELECT COUNT(*) FROM item_comments c WHERE c.item_id = i.id AND c.deleted_at IS NULL) AS comment_count"
@@ -256,6 +309,7 @@ async def list_items(
 async def get_item(task_id: str, item_id: str):
     async with get_db() as conn:
         await _check_task(task_id, conn)
+        await _expire_stale_assignments(conn, now(), task_id=task_id, item_id=item_id)
         item = await _get_item(item_id, task_id, conn)
         count = await _comment_count(item_id, conn)
         children_rows = await (await conn.execute(
@@ -280,7 +334,8 @@ async def patch_item(task_id: str, item_id: str, body: dict, token: str = Query(
     async with get_db() as conn:
         await _get_agent(token, conn)
         await _check_task(task_id, conn)
-        await _get_item(item_id, task_id, conn)
+        await _expire_stale_assignments(conn, ts, task_id=task_id, item_id=item_id)
+        item = await _get_item(item_id, task_id, conn)
 
         if "parent_id" in updates and updates["parent_id"] is not None:
             row = await (await conn.execute(
@@ -298,6 +353,7 @@ async def patch_item(task_id: str, item_id: str, body: dict, token: str = Query(
             if not row:
                 raise HTTPException(404, f"assignee '{updates['assignee_id']}' not found")
 
+        updates = _apply_assignment_rules(updates, ts, existing=dict(item))
         set_clauses = ", ".join(f"{k} = %s" for k in updates)
         values = list(updates.values()) + [ts, item_id, task_id]
         await conn.execute(
@@ -317,6 +373,7 @@ async def delete_item(task_id: str, item_id: str, token: str = Query(...)):
     async with get_db() as conn:
         agent_id = await _get_agent(token, conn)
         await _check_task(task_id, conn)
+        await _expire_stale_assignments(conn, ts, task_id=task_id, item_id=item_id)
         item = await _get_item(item_id, task_id, conn)
         if agent_id != item["created_by"]:
             raise HTTPException(403, "only the creator can delete this item")
@@ -339,14 +396,16 @@ async def assign_item(task_id: str, item_id: str, token: str = Query(...)):
     async with get_db() as conn:
         agent_id = await _get_agent(token, conn)
         await _check_task(task_id, conn)
+        await _expire_stale_assignments(conn, ts, task_id=task_id, item_id=item_id)
         item = await _get_item(item_id, task_id, conn)
+        if item["status"] == "archived":
+            raise HTTPException(409, "archived items cannot be assigned")
         if item["assignee_id"] is not None and item["assignee_id"] != agent_id:
             raise HTTPException(409, "item is already assigned to another agent")
-        if item["assignee_id"] != agent_id:
-            await conn.execute(
-                "UPDATE items SET assignee_id = %s, updated_at = %s WHERE id = %s AND task_id = %s",
-                (agent_id, ts, item_id, task_id),
-            )
+        await conn.execute(
+            "UPDATE items SET assignee_id = %s, assigned_at = %s, updated_at = %s WHERE id = %s AND task_id = %s",
+            (agent_id, ts, ts, item_id, task_id),
+        )
         item = await _get_item(item_id, task_id, conn)
         count = await _comment_count(item_id, conn)
     return JSONResponse(_item_response(dict(item), count))

@@ -211,7 +211,7 @@ class TestCrossTaskIsolation:
         token, item_id = self._setup(client)
         resp = client.patch(
             f"/api/tasks/taskbeta/items/{item_id}",
-            json={"status": "done"},
+            json={"status": "archived"},
             params={"token": token},
         )
         assert resp.status_code == 404
@@ -451,4 +451,3 @@ class TestDoubleOperations:
         assert r1.status_code == 200
         r2 = client.post("/api/tasks/adv-task/items/ADV-1/assign", params={"token": token_b})
         assert r2.status_code == 409
-

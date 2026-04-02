@@ -105,6 +105,7 @@ _PG_SCHEMA = [
         status          TEXT NOT NULL DEFAULT 'backlog',
         priority        TEXT NOT NULL DEFAULT 'none',
         assignee_id     TEXT REFERENCES agents(id),
+        assigned_at     TIMESTAMPTZ,
         parent_id       TEXT REFERENCES items(id),
         labels          TEXT[] DEFAULT '{}',
         created_by      TEXT NOT NULL REFERENCES agents(id),
@@ -257,6 +258,18 @@ def _ensure_postgres_migrations(conn) -> None:
     ).fetchone()
     if not row:
         conn.execute("ALTER TABLE tasks ADD COLUMN item_seq INTEGER NOT NULL DEFAULT 0")
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'items' AND column_name = 'assigned_at'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE items ADD COLUMN assigned_at TIMESTAMPTZ")
+    conn.execute("UPDATE items SET status = 'backlog' WHERE status = 'todo'")
+    conn.execute("UPDATE items SET status = 'archived' WHERE status IN ('done', 'cancelled', 'trash')")
+    conn.execute(
+        "UPDATE items SET assigned_at = COALESCE(updated_at, created_at)"
+        " WHERE assignee_id IS NOT NULL AND assigned_at IS NULL"
+    )
 
 
 # --- Async connection pool (one per worker process) ---

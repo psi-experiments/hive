@@ -185,19 +185,21 @@ class TestPatchEdgeCases:
 
 
 class TestAssignEdgeCases:
-    def test_assign_self_idempotent_updated_at_unchanged(self, client):
-        """Assigning same agent twice — updated_at should not change on second call."""
+    def test_assign_self_renews_assignment_timestamp(self, client):
+        """Assigning the same agent twice should renew the assignment timestamp."""
         _post_task(client)
         token = _register(client, "r3-assign-agent")
         _create_item(client, token=token)
         r1 = client.post("/api/tasks/r3-task/items/R3-1/assign", params={"token": token})
         assert r1.status_code == 200
         updated_at_1 = r1.json()["updated_at"]
+        assigned_at_1 = r1.json()["assigned_at"]
         r2 = client.post("/api/tasks/r3-task/items/R3-1/assign", params={"token": token})
         assert r2.status_code == 200
         updated_at_2 = r2.json()["updated_at"]
-        # Second assign is a no-op so updated_at should not change
-        assert updated_at_1 == updated_at_2
+        assigned_at_2 = r2.json()["assigned_at"]
+        assert updated_at_1 != updated_at_2
+        assert assigned_at_1 != assigned_at_2
 
     def test_assign_soft_deleted_item_404(self, client):
         """Assign a soft-deleted item — should 404."""
