@@ -1,9 +1,30 @@
+import json
 import re
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse as _BaseJSONResponse
 
 from .db import get_db, now, paginate
-from .main import JSONResponse, get_agent, _parse_sort
+
+
+class JSONResponse(_BaseJSONResponse):
+    def render(self, content) -> bytes:
+        return json.dumps(content, default=lambda o: o.isoformat() if isinstance(o, datetime) else (_ for _ in ()).throw(TypeError)).encode("utf-8")
+
+async def _get_agent(token: str, conn) -> str:
+    row = await (await conn.execute("SELECT id FROM agents WHERE id = %s", (token,))).fetchone()
+    if not row:
+        raise HTTPException(401, "invalid token")
+    await conn.execute("UPDATE agents SET last_seen_at = %s WHERE id = %s", (now(), token))
+    return row["id"]
+
+def _parse_sort(raw: str, allowed: dict[str, str]) -> str:
+    parts = raw.split(":", 1)
+    field, direction = parts[0], (parts[1].upper() if len(parts) > 1 else "DESC")
+    if direction not in ("ASC", "DESC"):
+        direction = "DESC"
+    return f"{allowed.get(field, list(allowed.values())[0])} {direction}"
 
 VALID_STATUSES = {"backlog", "todo", "in_progress", "done", "cancelled"}
 VALID_PRIORITIES = {"none", "low", "medium", "high", "urgent"}
@@ -12,9 +33,7 @@ _LABEL_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 router = APIRouter(prefix="/api/tasks/{task_id}/items")
 
 
-def _task_prefix(task_id: str) -> str:
-    return task_id.split("-")[0].upper()
-
+def _task_prefix(task_id: str) -> str: return task_id.split("-")[0].upper()
 
 def _validate_fields(body: dict):
     if "status" in body and body["status"] not in VALID_STATUSES:
@@ -26,27 +45,21 @@ def _validate_fields(body: dict):
             if not _LABEL_RE.match(label):
                 raise HTTPException(400, f"invalid label '{label}': only [a-zA-Z0-9_-] allowed")
 
-
 async def _check_task(task_id: str, conn):
-    row = await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone()
-    if not row:
+    if not await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
         raise HTTPException(404, "task not found")
 
 
 async def _get_item(item_id: str, task_id: str, conn):
     row = await (await conn.execute(
-        "SELECT * FROM items WHERE id = %s AND task_id = %s AND deleted_at IS NULL",
-        (item_id, task_id),
+        "SELECT * FROM items WHERE id = %s AND task_id = %s AND deleted_at IS NULL", (item_id, task_id),
     )).fetchone()
-    if not row:
-        raise HTTPException(404, "item not found")
+    if not row: raise HTTPException(404, "item not found")
     return row
-
 
 async def _comment_count(item_id: str, conn) -> int:
     row = await (await conn.execute(
-        "SELECT COUNT(*) AS cnt FROM item_comments WHERE item_id = %s AND deleted_at IS NULL",
-        (item_id,),
+        "SELECT COUNT(*) AS cnt FROM item_comments WHERE item_id = %s AND deleted_at IS NULL", (item_id,),
     )).fetchone()
     return row["cnt"]
 
@@ -96,7 +109,7 @@ async def create_item(task_id: str, body: dict, token: str = Query(...)):
     _validate_fields(body)
     ts = now()
     async with get_db() as conn:
-        agent_id = await get_agent(token, conn)
+        agent_id = await _get_agent(token, conn)
         await _check_task(task_id, conn)
 
         if body.get("assignee_id"):
@@ -225,7 +238,7 @@ async def bulk_create_items(task_id: str, body: dict, token: str = Query(...)):
         _validate_fields(item)
     ts = now()
     async with get_db() as conn:
-        agent_id = await get_agent(token, conn)
+        agent_id = await _get_agent(token, conn)
         await _check_task(task_id, conn)
         created = []
         for item in items_data:
@@ -287,7 +300,7 @@ async def bulk_update_items(task_id: str, body: dict, token: str = Query(...)):
         updates_list.append((item["id"], updates))
     ts = now()
     async with get_db() as conn:
-        await get_agent(token, conn)
+        await _get_agent(token, conn)
         await _check_task(task_id, conn)
         results = []
         for item_id, updates in updates_list:
@@ -345,7 +358,7 @@ async def patch_item(task_id: str, item_id: str, body: dict, token: str = Query(
     _validate_fields(updates)
     ts = now()
     async with get_db() as conn:
-        await get_agent(token, conn)
+        await _get_agent(token, conn)
         await _check_task(task_id, conn)
         await _get_item(item_id, task_id, conn)
 
@@ -382,7 +395,7 @@ async def patch_item(task_id: str, item_id: str, body: dict, token: str = Query(
 async def delete_item(task_id: str, item_id: str, token: str = Query(...)):
     ts = now()
     async with get_db() as conn:
-        agent_id = await get_agent(token, conn)
+        agent_id = await _get_agent(token, conn)
         await _check_task(task_id, conn)
         item = await _get_item(item_id, task_id, conn)
         if agent_id != item["created_by"]:
@@ -404,7 +417,7 @@ async def delete_item(task_id: str, item_id: str, token: str = Query(...)):
 async def assign_item(task_id: str, item_id: str, token: str = Query(...)):
     ts = now()
     async with get_db() as conn:
-        agent_id = await get_agent(token, conn)
+        agent_id = await _get_agent(token, conn)
         await _check_task(task_id, conn)
         item = await _get_item(item_id, task_id, conn)
         if item["assignee_id"] is not None and item["assignee_id"] != agent_id:
@@ -428,7 +441,7 @@ async def create_comment(task_id: str, item_id: str, body: dict, token: str = Qu
         raise HTTPException(400, "content too long")
     ts = now()
     async with get_db() as conn:
-        agent_id = await get_agent(token, conn)
+        agent_id = await _get_agent(token, conn)
         await _check_task(task_id, conn)
         await _get_item(item_id, task_id, conn)
         row = await (await conn.execute(
@@ -469,7 +482,7 @@ async def list_comments(task_id: str, item_id: str, page: int = 1, per_page: int
 async def delete_comment(task_id: str, item_id: str, comment_id: int, token: str = Query(...)):
     ts = now()
     async with get_db() as conn:
-        agent_id = await get_agent(token, conn)
+        agent_id = await _get_agent(token, conn)
         await _check_task(task_id, conn)
         await _get_item(item_id, task_id, conn)
         row = await (await conn.execute(
