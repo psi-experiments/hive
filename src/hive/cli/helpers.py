@@ -15,7 +15,10 @@ def _config() -> dict:
     if not CONFIG_PATH.exists():
         return {}
     with open(CONFIG_PATH) as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            return {}
 
 
 def _save_config(data: dict):
@@ -49,13 +52,22 @@ def _load_agent(name: str) -> dict:
     if not p.exists():
         raise click.ClickException(f"Agent '{name}' not found. Run: hive auth status")
     with open(p) as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            raise click.ClickException(f"Agent file corrupt: {p}. Re-register with: hive auth register")
 
 
 def _list_agents() -> list[dict]:
     if not AGENTS_DIR.exists():
         return []
-    return [json.loads(p.read_text()) for p in sorted(AGENTS_DIR.glob("*.json"))]
+    agents = []
+    for p in sorted(AGENTS_DIR.glob("*.json")):
+        try:
+            agents.append(json.loads(p.read_text()))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return agents
 
 
 def _resolve_agent_name() -> str:
