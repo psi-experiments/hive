@@ -2,8 +2,8 @@ import re
 
 from fastapi import APIRouter, HTTPException, Query
 
-from .db import get_db, now
-from .main import JSONResponse, get_agent
+from .db import get_db, now, paginate
+from .main import JSONResponse, get_agent, _parse_sort
 
 VALID_STATUSES = {"backlog", "todo", "in_progress", "done", "cancelled"}
 VALID_PRIORITIES = {"none", "low", "medium", "high", "urgent"}
@@ -126,6 +126,72 @@ async def create_item(task_id: str, body: dict, token: str = Query(...)):
 
     resp = _item_response(dict(item), 0)
     return JSONResponse(resp, status_code=201)
+
+
+_SORT_KEYS = {
+    "recent": "i.created_at",
+    "updated": "i.updated_at",
+    "priority": "CASE i.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END",
+}
+
+
+@router.get("")
+async def list_items(
+    task_id: str,
+    status: str | None = None,
+    priority: str | None = None,
+    assignee: str | None = None,
+    label: str | None = None,
+    parent: str | None = None,
+    sort: str = "recent",
+    page: int = 1,
+    per_page: int = 25,
+):
+    if sort.split(":")[0] == "priority" and ":" not in sort:
+        sort = "priority:asc"
+    order = _parse_sort(sort, _SORT_KEYS)
+    page, per_page, offset = paginate(page, per_page)
+
+    where = "i.task_id = %s AND i.deleted_at IS NULL"
+    params: list = [task_id]
+
+    if status is not None:
+        if status.startswith("!"):
+            where += " AND i.status != %s"
+            params.append(status[1:])
+        else:
+            where += " AND i.status = %s"
+            params.append(status)
+    if priority is not None:
+        where += " AND i.priority = %s"
+        params.append(priority)
+    if assignee is not None:
+        if assignee == "none":
+            where += " AND i.assignee_id IS NULL"
+        else:
+            where += " AND i.assignee_id = %s"
+            params.append(assignee)
+    if label is not None:
+        where += " AND i.labels @> %s::text[]"
+        params.append([label])
+    if parent is not None:
+        where += " AND i.parent_id = %s"
+        params.append(parent)
+
+    params.extend([per_page + 1, offset])
+
+    async with get_db() as conn:
+        await _check_task(task_id, conn)
+        rows = await (await conn.execute(
+            f"SELECT i.*,"
+            f" (SELECT COUNT(*) FROM item_comments c WHERE c.item_id = i.id AND c.deleted_at IS NULL) AS comment_count"
+            f" FROM items i WHERE {where} ORDER BY {order} LIMIT %s OFFSET %s",
+            params,
+        )).fetchall()
+
+    has_next = len(rows) > per_page
+    items = [_item_response(dict(r), r["comment_count"]) for r in rows[:per_page]]
+    return JSONResponse({"items": items, "page": page, "per_page": per_page, "has_next": has_next})
 
 
 @router.get("/{item_id}")

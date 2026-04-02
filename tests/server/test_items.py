@@ -129,3 +129,109 @@ class TestGetItem:
         _post_task(client)
         resp = client.get("/api/tasks/gsm8k/items/GSM8K-999")
         assert resp.status_code == 404
+
+
+class TestListItems:
+    def test_list_empty(self, client):
+        _post_task(client)
+        resp = client.get("/api/tasks/gsm8k/items")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["items"] == []
+        assert data["has_next"] is False
+
+    def test_list_returns_items(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item A"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item B"}, params={"token": token})
+        resp = client.get("/api/tasks/gsm8k/items")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 2
+
+    def test_filter_by_status(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Todo item", "status": "todo"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "Done item", "status": "done"}, params={"token": token})
+        resp = client.get("/api/tasks/gsm8k/items", params={"status": "todo"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 1
+        assert data["items"][0]["status"] == "todo"
+
+    def test_filter_status_negation(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Todo item", "status": "todo"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "Done item", "status": "done"}, params={"token": token})
+        resp = client.get("/api/tasks/gsm8k/items", params={"status": "!done"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 1
+        assert data["items"][0]["status"] == "todo"
+
+    def test_filter_assignee_none(self, client):
+        _post_task(client)
+        token = _register(client, "agent-a")
+        client.post("/api/tasks/gsm8k/items", json={"title": "Unassigned"}, params={"token": token})
+        client.post(
+            "/api/tasks/gsm8k/items",
+            json={"title": "Assigned", "assignee_id": "agent-a"},
+            params={"token": token},
+        )
+        resp = client.get("/api/tasks/gsm8k/items", params={"assignee": "none"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 1
+        assert data["items"][0]["assignee_id"] is None
+
+    def test_filter_by_label(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Bug item", "labels": ["bug"]}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "Feature item", "labels": ["feature"]}, params={"token": token})
+        resp = client.get("/api/tasks/gsm8k/items", params={"label": "bug"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 1
+        assert "bug" in data["items"][0]["labels"]
+
+    def test_filter_by_parent(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Parent"}, params={"token": token})
+        client.post(
+            "/api/tasks/gsm8k/items",
+            json={"title": "Child", "parent_id": "GSM8K-1"},
+            params={"token": token},
+        )
+        client.post("/api/tasks/gsm8k/items", json={"title": "Unrelated"}, params={"token": token})
+        resp = client.get("/api/tasks/gsm8k/items", params={"parent": "GSM8K-1"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 1
+        assert data["items"][0]["id"] == "GSM8K-2"
+
+    def test_sort_by_priority(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Low item", "priority": "low"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "Urgent item", "priority": "urgent"}, params={"token": token})
+        resp = client.get("/api/tasks/gsm8k/items", params={"sort": "priority"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 2
+        assert data["items"][0]["priority"] == "urgent"
+
+    def test_pagination(self, client):
+        _post_task(client)
+        token = _register(client)
+        for i in range(3):
+            client.post("/api/tasks/gsm8k/items", json={"title": f"Item {i}"}, params={"token": token})
+        resp = client.get("/api/tasks/gsm8k/items", params={"page": 1, "per_page": 2})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 2
+        assert data["has_next"] is True
