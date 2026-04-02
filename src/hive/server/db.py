@@ -238,6 +238,17 @@ def _ensure_postgres_migrations(conn) -> None:
         conn.execute("ALTER TABLE agents ADD COLUMN user_id INTEGER REFERENCES users(id)")
         # Backfill: set token = id for existing agents
         conn.execute("UPDATE agents SET token = id WHERE token IS NULL")
+    # GitHub OAuth columns on users
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'users' AND column_name = 'github_id'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE users ADD COLUMN github_id BIGINT UNIQUE")
+        conn.execute("ALTER TABLE users ADD COLUMN github_username TEXT")
+        conn.execute("ALTER TABLE users ADD COLUMN github_token TEXT")
+        conn.execute("ALTER TABLE users ADD COLUMN github_connected_at TIMESTAMPTZ")
+        conn.execute("ALTER TABLE users ALTER COLUMN password DROP NOT NULL")
 
 
 # --- Async connection pool (one per worker process) ---

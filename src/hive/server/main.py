@@ -20,13 +20,17 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 JWT_SECRET = os.environ.get("JWT_SECRET", "hive-dev-secret-change-me")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
+GITHUB_OAUTH_CLIENT_ID = os.environ.get("GITHUB_OAUTH_CLIENT_ID", "")
+GITHUB_OAUTH_CLIENT_SECRET = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET", "")
 
 
 def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
-def _check_password(password: str, hashed: str) -> bool:
+def _check_password(password: str, hashed: str | None) -> bool:
+    if not hashed:
+        return False
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
@@ -196,7 +200,7 @@ async def auth_me(user: dict = Depends(require_user)):
     user_id = int(user["sub"])
     async with get_db() as conn:
         row = await (await conn.execute(
-            "SELECT id, email, role, created_at FROM users WHERE id = %s", (user_id,)
+            "SELECT id, email, role, github_username, created_at FROM users WHERE id = %s", (user_id,)
         )).fetchone()
         if not row:
             raise HTTPException(404, "user not found")
@@ -205,7 +209,8 @@ async def auth_me(user: dict = Depends(require_user)):
             (user_id,),
         )).fetchall()
     return {
-        "id": row["id"], "email": row["email"], "role": row["role"], "created_at": row["created_at"],
+        "id": row["id"], "email": row["email"], "role": row["role"],
+        "github_username": row["github_username"], "created_at": row["created_at"],
         "agents": [{"id": a["id"], "registered_at": a["registered_at"], "last_seen_at": a["last_seen_at"], "total_runs": a["total_runs"]} for a in agents],
     }
 
@@ -232,6 +237,174 @@ async def auth_claim(body: dict[str, Any], user: dict = Depends(require_user)):
             "UPDATE agents SET user_id = %s WHERE id = %s", (user_id, agent["id"])
         )
     return {"agent_id": agent["id"], "status": "claimed"}
+
+
+@router.post("/auth/github")
+async def auth_github(body: dict[str, Any]):
+    """Exchange GitHub OAuth code for a Hive JWT. Creates or links user account."""
+    code = body.get("code", "")
+    if not code:
+        raise HTTPException(400, "code required")
+    if not GITHUB_OAUTH_CLIENT_ID or not GITHUB_OAUTH_CLIENT_SECRET:
+        raise HTTPException(501, "GitHub OAuth not configured")
+    import httpx
+    resp = httpx.post("https://github.com/login/oauth/access_token", json={
+        "client_id": GITHUB_OAUTH_CLIENT_ID,
+        "client_secret": GITHUB_OAUTH_CLIENT_SECRET,
+        "code": code,
+    }, headers={"Accept": "application/json"}, timeout=15)
+    if resp.status_code != 200:
+        raise HTTPException(502, "GitHub OAuth exchange failed")
+    data = resp.json()
+    gh_token = data.get("access_token")
+    if not gh_token:
+        raise HTTPException(400, data.get("error_description", "OAuth exchange failed"))
+    gh_user = httpx.get("https://api.github.com/user", headers={
+        "Authorization": f"Bearer {gh_token}",
+        "Accept": "application/vnd.github+json",
+    }, timeout=15).json()
+    gh_id = gh_user.get("id")
+    gh_username = gh_user.get("login", "")
+    if not gh_id:
+        raise HTTPException(502, "failed to fetch GitHub user info")
+    # Try to get email from GitHub (may need separate call if private)
+    gh_email = gh_user.get("email")
+    if not gh_email:
+        emails_resp = httpx.get("https://api.github.com/user/emails", headers={
+            "Authorization": f"Bearer {gh_token}",
+            "Accept": "application/vnd.github+json",
+        }, timeout=15)
+        if emails_resp.status_code == 200:
+            for e in emails_resp.json():
+                if e.get("primary"):
+                    gh_email = e["email"]
+                    break
+    if not gh_email:
+        gh_email = f"{gh_username}@users.noreply.github.com"
+    gh_email = gh_email.lower()
+    async with get_db() as conn:
+        # Check if user with this github_id already exists
+        row = await (await conn.execute(
+            "SELECT id, email, role FROM users WHERE github_id = %s", (gh_id,)
+        )).fetchone()
+        if row:
+            await conn.execute(
+                "UPDATE users SET github_token = %s, github_username = %s, github_connected_at = %s WHERE id = %s",
+                (gh_token, gh_username, now(), row["id"]),
+            )
+            token = _create_jwt(row["id"], row["email"], row["role"])
+            return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "github_username": gh_username}}
+        # Check if user with same email exists — link accounts
+        row = await (await conn.execute(
+            "SELECT id, email, role FROM users WHERE email = %s", (gh_email,)
+        )).fetchone()
+        if row:
+            await conn.execute(
+                "UPDATE users SET github_id = %s, github_token = %s, github_username = %s, github_connected_at = %s WHERE id = %s",
+                (gh_id, gh_token, gh_username, now(), row["id"]),
+            )
+            token = _create_jwt(row["id"], row["email"], row["role"])
+            return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "github_username": gh_username}}
+        # Create new user (no password — GitHub-only)
+        row = await (await conn.execute(
+            "INSERT INTO users (email, github_id, github_username, github_token, github_connected_at, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, role",
+            (gh_email, gh_id, gh_username, gh_token, now(), now()),
+        )).fetchone()
+    token = _create_jwt(row["id"], gh_email, row["role"])
+    return JSONResponse(
+        {"token": token, "user": {"id": row["id"], "email": gh_email, "role": row["role"], "github_username": gh_username}},
+        status_code=201,
+    )
+
+
+@router.post("/auth/github/connect")
+async def auth_github_connect(body: dict[str, Any], user: dict = Depends(require_user)):
+    """Connect GitHub to an existing logged-in user account."""
+    code = body.get("code", "")
+    if not code:
+        raise HTTPException(400, "code required")
+    if not GITHUB_OAUTH_CLIENT_ID or not GITHUB_OAUTH_CLIENT_SECRET:
+        raise HTTPException(501, "GitHub OAuth not configured")
+    import httpx
+    resp = httpx.post("https://github.com/login/oauth/access_token", json={
+        "client_id": GITHUB_OAUTH_CLIENT_ID,
+        "client_secret": GITHUB_OAUTH_CLIENT_SECRET,
+        "code": code,
+    }, headers={"Accept": "application/json"}, timeout=15)
+    if resp.status_code != 200:
+        raise HTTPException(502, "GitHub OAuth exchange failed")
+    data = resp.json()
+    gh_token = data.get("access_token")
+    if not gh_token:
+        raise HTTPException(400, data.get("error_description", "OAuth exchange failed"))
+    gh_user = httpx.get("https://api.github.com/user", headers={
+        "Authorization": f"Bearer {gh_token}",
+        "Accept": "application/vnd.github+json",
+    }, timeout=15).json()
+    gh_id = gh_user.get("id")
+    gh_username = gh_user.get("login", "")
+    if not gh_id:
+        raise HTTPException(502, "failed to fetch GitHub user info")
+    user_id = int(user["sub"])
+    async with get_db() as conn:
+        # Check if this GitHub account is already linked to another user
+        existing = await (await conn.execute(
+            "SELECT id FROM users WHERE github_id = %s AND id != %s", (gh_id, user_id)
+        )).fetchone()
+        if existing:
+            raise HTTPException(409, "this GitHub account is already linked to another user")
+        await conn.execute(
+            "UPDATE users SET github_id = %s, github_token = %s, github_username = %s, github_connected_at = %s WHERE id = %s",
+            (gh_id, gh_token, gh_username, now(), user_id),
+        )
+    return {"github_username": gh_username, "status": "connected"}
+
+
+@router.delete("/auth/github")
+async def auth_github_disconnect(user: dict = Depends(require_user)):
+    """Disconnect GitHub from the current user account."""
+    user_id = int(user["sub"])
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT password FROM users WHERE id = %s", (user_id,)
+        )).fetchone()
+        if not row or not row["password"]:
+            raise HTTPException(400, "cannot disconnect GitHub — no password set. Set a password first.")
+        await conn.execute(
+            "UPDATE users SET github_id = NULL, github_token = NULL, github_username = NULL, github_connected_at = NULL WHERE id = %s",
+            (user_id,),
+        )
+    return {"status": "disconnected"}
+
+
+@router.get("/auth/github/repos")
+async def auth_github_repos(user: dict = Depends(require_user), page: int = 1, per_page: int = 30):
+    """List the authenticated user's GitHub repos (requires connected GitHub account)."""
+    user_id = int(user["sub"])
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT github_token FROM users WHERE id = %s", (user_id,)
+        )).fetchone()
+    if not row or not row["github_token"]:
+        raise HTTPException(400, "GitHub not connected")
+    import httpx
+    resp = httpx.get("https://api.github.com/user/repos", params={
+        "sort": "updated", "per_page": min(per_page, 100), "page": page,
+        "affiliation": "owner,collaborator,organization_member",
+    }, headers={
+        "Authorization": f"Bearer {row['github_token']}",
+        "Accept": "application/vnd.github+json",
+    }, timeout=15)
+    if resp.status_code == 401:
+        raise HTTPException(401, "GitHub token expired — please reconnect")
+    if resp.status_code != 200:
+        raise HTTPException(502, "failed to fetch repos from GitHub")
+    repos = [{"full_name": r["full_name"], "name": r["name"], "private": r["private"],
+              "description": r.get("description"), "url": r["html_url"],
+              "default_branch": r["default_branch"], "updated_at": r["updated_at"]}
+             for r in resp.json()]
+    return {"repos": repos, "page": page}
 
 
 async def get_agent(token: str, conn) -> str:

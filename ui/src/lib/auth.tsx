@@ -6,6 +6,7 @@ interface User {
   id: number;
   email: string;
   role: string;
+  github_username?: string | null;
 }
 
 interface AuthState {
@@ -16,6 +17,9 @@ interface AuthState {
 interface AuthContextType extends AuthState {
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string) => Promise<void>;
+  loginWithGithub: (code: string) => Promise<void>;
+  connectGithub: (code: string) => Promise<void>;
+  disconnectGithub: () => Promise<void>;
   logout: () => void;
   isAdmin: boolean;
 }
@@ -75,12 +79,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     persist({ token: data.token, user: data.user });
   }, []);
 
+  const loginWithGithub = useCallback(async (code: string) => {
+    const res = await fetch(`${API_BASE}/auth/github`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.detail ?? "GitHub login failed");
+    }
+    const data = await res.json();
+    persist({ token: data.token, user: data.user });
+  }, []);
+
+  const connectGithub = useCallback(async (code: string) => {
+    const res = await fetch(`${API_BASE}/auth/github/connect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ code }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.detail ?? "GitHub connect failed");
+    }
+    const data = await res.json();
+    if (state.user) {
+      persist({ ...state, user: { ...state.user, github_username: data.github_username } });
+    }
+  }, [state]);
+
+  const disconnectGithub = useCallback(async () => {
+    const res = await fetch(`${API_BASE}/auth/github`, {
+      method: "DELETE",
+      headers: getAuthHeader(),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.detail ?? "GitHub disconnect failed");
+    }
+    if (state.user) {
+      persist({ ...state, user: { ...state.user, github_username: null } });
+    }
+  }, [state]);
+
   const logout = useCallback(() => {
     persist({ token: null, user: null });
   }, []);
 
   return (
-    <AuthContext.Provider value={{ ...state, login, signup, logout, isAdmin: state.user?.role === "admin" }}>
+    <AuthContext.Provider value={{ ...state, login, signup, loginWithGithub, connectGithub, disconnectGithub, logout, isAdmin: state.user?.role === "admin" }}>
       {children}
     </AuthContext.Provider>
   );
@@ -90,6 +138,14 @@ export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");
   return ctx;
+}
+
+const GITHUB_CLIENT_ID = process.env.NEXT_PUBLIC_GITHUB_OAUTH_CLIENT_ID ?? "";
+
+export function getGithubOAuthUrl(mode: "login" | "connect" = "login"): string {
+  const redirectUri = `${window.location.origin}/auth/github/callback`;
+  const state = mode;
+  return `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&scope=repo,read:user,user:email&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
 }
 
 export function getAuthHeader(): Record<string, string> {
