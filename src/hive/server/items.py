@@ -69,6 +69,26 @@ def _item_response(item: dict, comment_count: int) -> dict:
     }
 
 
+_UPDATABLE_FIELDS = {"title", "description", "status", "priority", "assignee_id", "parent_id", "labels"}
+
+
+async def _check_cycle(item_id: str, new_parent_id: str, conn):
+    if new_parent_id == item_id:
+        raise HTTPException(400, "cycle detected: item cannot be its own parent")
+    current = new_parent_id
+    depth = 0
+    while current is not None and depth < 5:
+        if current == item_id:
+            raise HTTPException(400, "cycle detected: would create circular parent chain")
+        row = await (await conn.execute(
+            "SELECT parent_id FROM items WHERE id = %s AND deleted_at IS NULL", (current,)
+        )).fetchone()
+        current = row["parent_id"] if row else None
+        depth += 1
+    if depth >= 5:
+        raise HTTPException(400, "max depth of 5 exceeded")
+
+
 @router.post("", status_code=201)
 async def create_item(task_id: str, body: dict, token: str = Query(...)):
     if not body.get("title"):
@@ -210,3 +230,44 @@ async def get_item(task_id: str, item_id: str):
     resp = _item_response(dict(item), count)
     resp["children"] = [{"id": r["id"], "title": r["title"], "status": r["status"]} for r in children_rows]
     return JSONResponse(resp)
+
+
+@router.patch("/{item_id}")
+async def patch_item(task_id: str, item_id: str, body: dict, token: str = Query(...)):
+    updates = {k: v for k, v in body.items() if k in _UPDATABLE_FIELDS}
+    if not updates:
+        raise HTTPException(400, "no updatable fields provided")
+    _validate_fields(updates)
+    ts = now()
+    async with get_db() as conn:
+        await get_agent(token, conn)
+        await _check_task(task_id, conn)
+        await _get_item(item_id, task_id, conn)
+
+        if "parent_id" in updates and updates["parent_id"] is not None:
+            row = await (await conn.execute(
+                "SELECT id FROM items WHERE id = %s AND task_id = %s AND deleted_at IS NULL",
+                (updates["parent_id"], task_id),
+            )).fetchone()
+            if not row:
+                raise HTTPException(404, f"parent item '{updates['parent_id']}' not found")
+            await _check_cycle(item_id, updates["parent_id"], conn)
+
+        if "assignee_id" in updates and updates["assignee_id"] is not None:
+            row = await (await conn.execute(
+                "SELECT id FROM agents WHERE id = %s", (updates["assignee_id"],)
+            )).fetchone()
+            if not row:
+                raise HTTPException(404, f"assignee '{updates['assignee_id']}' not found")
+
+        set_clauses = ", ".join(f"{k} = %s" for k in updates)
+        values = list(updates.values()) + [ts, item_id, task_id]
+        await conn.execute(
+            f"UPDATE items SET {set_clauses}, updated_at = %s WHERE id = %s AND task_id = %s",
+            values,
+        )
+
+        item = await _get_item(item_id, task_id, conn)
+        count = await _comment_count(item_id, conn)
+
+    return JSONResponse(_item_response(dict(item), count))

@@ -235,3 +235,97 @@ class TestListItems:
         data = resp.json()
         assert len(data["items"]) == 2
         assert data["has_next"] is True
+
+
+class TestPatchItem:
+    def test_update_status(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        resp = client.patch(
+            "/api/tasks/gsm8k/items/GSM8K-1",
+            json={"status": "in_progress"},
+            params={"token": token},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "in_progress"
+
+    def test_update_multiple_fields(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        resp = client.patch(
+            "/api/tasks/gsm8k/items/GSM8K-1",
+            json={"title": "Updated", "priority": "high", "labels": ["bug"]},
+            params={"token": token},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["title"] == "Updated"
+        assert data["priority"] == "high"
+        assert data["labels"] == ["bug"]
+
+    def test_update_invalid_status(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "Item"}, params={"token": token})
+        resp = client.patch(
+            "/api/tasks/gsm8k/items/GSM8K-1",
+            json={"status": "invalid"},
+            params={"token": token},
+        )
+        assert resp.status_code == 400
+
+    def test_cycle_detection(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "A"}, params={"token": token})
+        client.post(
+            "/api/tasks/gsm8k/items",
+            json={"title": "B", "parent_id": "GSM8K-1"},
+            params={"token": token},
+        )
+        resp = client.patch(
+            "/api/tasks/gsm8k/items/GSM8K-1",
+            json={"parent_id": "GSM8K-2"},
+            params={"token": token},
+        )
+        assert resp.status_code == 400
+        assert "cycle" in resp.json()["detail"]
+
+    def test_self_parent_rejected(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "A"}, params={"token": token})
+        resp = client.patch(
+            "/api/tasks/gsm8k/items/GSM8K-1",
+            json={"parent_id": "GSM8K-1"},
+            params={"token": token},
+        )
+        assert resp.status_code == 400
+
+    def test_max_depth_exceeded(self, client):
+        _post_task(client)
+        token = _register(client)
+        client.post("/api/tasks/gsm8k/items", json={"title": "1"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "2", "parent_id": "GSM8K-1"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "3", "parent_id": "GSM8K-2"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "4", "parent_id": "GSM8K-3"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "5", "parent_id": "GSM8K-4"}, params={"token": token})
+        client.post("/api/tasks/gsm8k/items", json={"title": "6"}, params={"token": token})
+        resp = client.patch(
+            "/api/tasks/gsm8k/items/GSM8K-6",
+            json={"parent_id": "GSM8K-5"},
+            params={"token": token},
+        )
+        assert resp.status_code == 400
+
+    def test_not_found(self, client):
+        _post_task(client)
+        token = _register(client)
+        resp = client.patch(
+            "/api/tasks/gsm8k/items/GSM8K-999",
+            json={"status": "done"},
+            params={"token": token},
+        )
+        assert resp.status_code == 404
