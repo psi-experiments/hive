@@ -111,6 +111,7 @@ def _json_default(obj):
     if isinstance(obj, datetime):
         return obj.isoformat()
     raise TypeError(f"Type {type(obj)} not JSON serializable")
+from .email import send_verification_email
 from .github import get_github_app
 from .names import generate_name
 
@@ -192,6 +193,8 @@ async def auth_signup(body: dict[str, Any]):
     if len(password) < 8:
         raise HTTPException(400, "password must be at least 8 characters")
     hashed = _hash_password(password)
+    verify_token = str(uuid.uuid4())
+    verify_expires = now() + timedelta(hours=24)
     async with get_db() as conn:
         existing = await (await conn.execute(
             "SELECT id FROM users WHERE email = %s", (email,)
@@ -199,11 +202,16 @@ async def auth_signup(body: dict[str, Any]):
         if existing:
             raise HTTPException(409, "email already registered")
         row = await (await conn.execute(
-            "INSERT INTO users (email, password, created_at) VALUES (%s, %s, %s) RETURNING id, role",
-            (email, hashed, now()),
+            "INSERT INTO users (email, password, email_verified, verify_token, verify_token_expires, created_at)"
+            " VALUES (%s, %s, FALSE, %s, %s, %s) RETURNING id, role",
+            (email, hashed, verify_token, verify_expires, now()),
         )).fetchone()
+    try:
+        await send_verification_email(email, verify_token)
+    except Exception:
+        pass  # best-effort; user can resend later
     token = _create_jwt(row["id"], email, row["role"])
-    return JSONResponse({"token": token, "user": {"id": row["id"], "email": email, "role": row["role"]}}, status_code=201)
+    return JSONResponse({"token": token, "user": {"id": row["id"], "email": email, "role": row["role"], "email_verified": False}}, status_code=201)
 
 
 @router.post("/auth/login")
@@ -214,12 +222,12 @@ async def auth_login(body: dict[str, Any]):
         raise HTTPException(400, "email and password required")
     async with get_db() as conn:
         row = await (await conn.execute(
-            "SELECT id, email, password, role FROM users WHERE email = %s", (email,)
+            "SELECT id, email, password, role, email_verified FROM users WHERE email = %s", (email,)
         )).fetchone()
     if not row or not _check_password(password, row["password"]):
         raise HTTPException(401, "invalid email or password")
     token = _create_jwt(row["id"], row["email"], row["role"])
-    return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"]}}
+    return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "email_verified": row["email_verified"]}}
 
 
 @router.get("/auth/me")
@@ -227,7 +235,7 @@ async def auth_me(user: dict = Depends(require_user)):
     user_id = int(user["sub"])
     async with get_db() as conn:
         row = await (await conn.execute(
-            "SELECT id, email, role, github_username, created_at FROM users WHERE id = %s", (user_id,)
+            "SELECT id, email, role, email_verified, github_username, created_at FROM users WHERE id = %s", (user_id,)
         )).fetchone()
         if not row:
             raise HTTPException(404, "user not found")
@@ -237,6 +245,7 @@ async def auth_me(user: dict = Depends(require_user)):
         )).fetchall()
     return {
         "id": row["id"], "email": row["email"], "role": row["role"],
+        "email_verified": row["email_verified"],
         "github_username": row["github_username"], "created_at": row["created_at"],
         "agents": [{"id": a["id"], "registered_at": a["registered_at"], "last_seen_at": a["last_seen_at"], "total_runs": a["total_runs"]} for a in agents],
     }
@@ -264,6 +273,49 @@ async def auth_claim(body: dict[str, Any], user: dict = Depends(require_user)):
             "UPDATE agents SET user_id = %s WHERE id = %s", (user_id, agent["id"])
         )
     return {"agent_id": agent["id"], "status": "claimed"}
+
+
+@router.get("/auth/verify")
+async def auth_verify(token: str = Query(...)):
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT id, email, email_verified, verify_token_expires FROM users WHERE verify_token = %s", (token,)
+        )).fetchone()
+        if not row:
+            raise HTTPException(400, "invalid or expired verification link")
+        if row["email_verified"]:
+            return {"status": "already_verified", "email": row["email"]}
+        if row["verify_token_expires"] and row["verify_token_expires"] < now():
+            raise HTTPException(400, "verification link has expired — request a new one")
+        await conn.execute(
+            "UPDATE users SET email_verified = TRUE, verify_token = NULL, verify_token_expires = NULL WHERE id = %s",
+            (row["id"],),
+        )
+    return {"status": "verified", "email": row["email"]}
+
+
+@router.post("/auth/verify/resend")
+async def auth_resend_verification(user: dict = Depends(require_user)):
+    user_id = int(user["sub"])
+    verify_token = str(uuid.uuid4())
+    verify_expires = now() + timedelta(hours=24)
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT email, email_verified FROM users WHERE id = %s", (user_id,)
+        )).fetchone()
+        if not row:
+            raise HTTPException(404, "user not found")
+        if row["email_verified"]:
+            return {"status": "already_verified"}
+        await conn.execute(
+            "UPDATE users SET verify_token = %s, verify_token_expires = %s WHERE id = %s",
+            (verify_token, verify_expires, user_id),
+        )
+    try:
+        await send_verification_email(row["email"], verify_token)
+    except Exception:
+        raise HTTPException(502, "failed to send verification email")
+    return {"status": "sent"}
 
 
 @router.post("/auth/github")
@@ -296,21 +348,21 @@ async def auth_github(body: dict[str, Any]):
             )
             token = _create_jwt(row["id"], row["email"], row["role"])
             return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "github_username": gh_username}}
-        # Check if user with same email exists — link accounts
+        # Only auto-link if the existing email account is verified (prevents email squatting)
         row = await (await conn.execute(
-            "SELECT id, email, role FROM users WHERE email = %s", (gh_email,)
+            "SELECT id, email, role, email_verified FROM users WHERE email = %s", (gh_email,)
         )).fetchone()
-        if row:
+        if row and row["email_verified"]:
             await conn.execute(
                 "UPDATE users SET github_id = %s, github_token = %s, github_username = %s, github_connected_at = %s WHERE id = %s",
                 (gh_id, gh_token, gh_username, now(), row["id"]),
             )
             token = _create_jwt(row["id"], row["email"], row["role"])
             return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "github_username": gh_username}}
-        # Create new user (no password — GitHub-only)
+        # Create new user (no password — GitHub-only, email verified via GitHub)
         row = await (await conn.execute(
-            "INSERT INTO users (email, github_id, github_username, github_token, github_connected_at, created_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, role",
+            "INSERT INTO users (email, email_verified, github_id, github_username, github_token, github_connected_at, created_at)"
+            " VALUES (%s, TRUE, %s, %s, %s, %s, %s) RETURNING id, role",
             (gh_email, gh_id, gh_username, gh_token, now(), now()),
         )).fetchone()
     token = _create_jwt(row["id"], gh_email, row["role"])

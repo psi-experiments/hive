@@ -6,6 +6,7 @@ interface User {
   id: number;
   email: string;
   role: string;
+  email_verified?: boolean;
   github_username?: string | null;
 }
 
@@ -20,6 +21,7 @@ interface AuthContextType extends AuthState {
   loginWithGithub: (code: string) => Promise<void>;
   connectGithub: (code: string) => Promise<void>;
   disconnectGithub: () => Promise<void>;
+  resendVerification: () => Promise<void>;
   logout: () => void;
   isAdmin: boolean;
 }
@@ -129,12 +131,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const resendVerification = useCallback(async () => {
+    const res = await fetch(`${API_BASE}/auth/verify/resend`, {
+      method: "POST",
+      headers: getAuthHeader(),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.detail ?? "Failed to send verification email");
+    }
+  }, []);
+
   const logout = useCallback(() => {
     persist({ token: null, user: null });
   }, []);
 
   return (
-    <AuthContext.Provider value={{ ...state, login, signup, loginWithGithub, connectGithub, disconnectGithub, logout, isAdmin: state.user?.role === "admin" }}>
+    <AuthContext.Provider value={{ ...state, login, signup, loginWithGithub, connectGithub, disconnectGithub, resendVerification, logout, isAdmin: state.user?.role === "admin" }}>
       {children}
     </AuthContext.Provider>
   );

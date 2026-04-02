@@ -262,6 +262,17 @@ def _ensure_postgres_migrations(conn) -> None:
         conn.execute("ALTER TABLE tasks ADD COLUMN owner_id INTEGER REFERENCES users(id)")
         conn.execute("ALTER TABLE tasks ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'")
         conn.execute("ALTER TABLE tasks ADD COLUMN source_repo TEXT")
+    # Email verification columns on users
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'users' AND column_name = 'email_verified'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.execute("ALTER TABLE users ADD COLUMN verify_token TEXT")
+        conn.execute("ALTER TABLE users ADD COLUMN verify_token_expires TIMESTAMPTZ")
+        # GitHub-only users are considered verified (GitHub verifies their email)
+        conn.execute("UPDATE users SET email_verified = TRUE WHERE github_id IS NOT NULL")
 
 
 # --- Async connection pool (one per worker process) ---

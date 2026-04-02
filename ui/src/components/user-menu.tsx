@@ -22,13 +22,14 @@ interface ProfileData {
   id: number;
   email: string;
   role: string;
+  email_verified: boolean;
   github_username: string | null;
   created_at: string;
   agents: AgentInfo[];
 }
 
 function AccountPanel({ onClose }: { onClose: () => void }) {
-  const { user, logout, disconnectGithub } = useAuth();
+  const { user, logout, disconnectGithub, resendVerification } = useAuth();
   const [showClaim, setShowClaim] = useState(false);
   const [showCreateTask, setShowCreateTask] = useState(false);
   const [profile, setProfile] = useState<ProfileData | null>(null);
@@ -111,6 +112,23 @@ function AccountPanel({ onClose }: { onClose: () => void }) {
             </div>
           )}
         </div>
+
+        {/* Email verification banner */}
+        {profile && !profile.email_verified && (
+          <div className="mx-6 mt-0 mb-0 px-4 py-3 border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40">
+            <p className="text-xs text-amber-800 dark:text-amber-300">
+              Email not verified.{" "}
+              <button
+                onClick={async () => {
+                  try { await resendVerification(); } catch {}
+                }}
+                className="underline hover:no-underline font-medium"
+              >
+                Resend verification email
+              </button>
+            </p>
+          </div>
+        )}
 
         {/* GitHub section */}
         <div className="px-8 py-4 border-t border-[var(--color-border)]">
