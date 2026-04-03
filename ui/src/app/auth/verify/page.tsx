@@ -23,7 +23,11 @@ export default function VerifyEmailPage() {
     handled.current = true;
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/auth/verify?token=${token}`);
+        const res = await fetch(`${API_BASE}/auth/verify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
         const data = await res.json();
         if (!res.ok) {
           setStatus("error");

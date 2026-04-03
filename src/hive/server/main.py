@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import hashlib
 import json
 import os
 import re
@@ -11,11 +13,13 @@ import bcrypt
 import httpx
 import jwt
 import psycopg.errors
+from cryptography.fernet import Fernet
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse as _BaseJSONResponse
 
 from .db import init_pool, close_pool, get_db, get_db_sync, now, paginate
+from .email import send_verification_email
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 JWT_SECRET = os.environ.get("JWT_SECRET", "hive-dev-secret-change-me")
@@ -24,12 +28,16 @@ JWT_EXPIRY_HOURS = 24
 GITHUB_OAUTH_CLIENT_ID = os.environ.get("GITHUB_OAUTH_CLIENT_ID", "")
 GITHUB_OAUTH_CLIENT_SECRET = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET", "")
 
+# Derive a Fernet key from JWT_SECRET for encrypting GitHub tokens at rest
+_fernet = Fernet(base64.urlsafe_b64encode(hashlib.sha256(JWT_SECRET.encode()).digest()))
+
 
 def _gh_user_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
 
 
-def _exchange_github_code(code: str) -> tuple[str, int, str]:
+def _exchange_github_code(code: str) -> tuple[str, int, str, str]:
+    """Exchange OAuth code for token, returning (gh_token, gh_id, gh_username, gh_email)."""
     if not GITHUB_OAUTH_CLIENT_ID or not GITHUB_OAUTH_CLIENT_SECRET:
         raise HTTPException(501, "GitHub OAuth not configured")
     resp = httpx.post("https://github.com/login/oauth/access_token", json={
@@ -43,12 +51,23 @@ def _exchange_github_code(code: str) -> tuple[str, int, str]:
     gh_token = data.get("access_token")
     if not gh_token:
         raise HTTPException(400, data.get("error_description", "OAuth exchange failed"))
-    gh_user = httpx.get("https://api.github.com/user", headers=_gh_user_headers(gh_token), timeout=15).json()
+    headers = _gh_user_headers(gh_token)
+    gh_user = httpx.get("https://api.github.com/user", headers=headers, timeout=15).json()
     gh_id = gh_user.get("id")
     gh_username = gh_user.get("login", "")
     if not gh_id:
         raise HTTPException(502, "failed to fetch GitHub user info")
-    return gh_token, gh_id, gh_username
+    # Get email — may need /user/emails if profile email is private
+    email = gh_user.get("email")
+    if not email:
+        emails_resp = httpx.get("https://api.github.com/user/emails", headers=headers, timeout=15)
+        if emails_resp.status_code == 200:
+            for e in emails_resp.json():
+                if e.get("primary"):
+                    email = e["email"]
+                    break
+    email = (email or f"{gh_username}@users.noreply.github.com").lower()
+    return gh_token, gh_id, gh_username, email
 
 
 def _hash_password(password: str) -> str:
@@ -111,7 +130,6 @@ def _json_default(obj):
     if isinstance(obj, datetime):
         return obj.isoformat()
     raise TypeError(f"Type {type(obj)} not JSON serializable")
-from .email import send_verification_email
 from .github import get_github_app
 from .names import generate_name
 
@@ -196,16 +214,14 @@ async def auth_signup(body: dict[str, Any]):
     verify_token = str(uuid.uuid4())
     verify_expires = now() + timedelta(hours=24)
     async with get_db() as conn:
-        existing = await (await conn.execute(
-            "SELECT id FROM users WHERE email = %s", (email,)
-        )).fetchone()
-        if existing:
+        try:
+            row = await (await conn.execute(
+                "INSERT INTO users (email, password, email_verified, verify_token, verify_token_expires, created_at)"
+                " VALUES (%s, %s, FALSE, %s, %s, %s) RETURNING id, role",
+                (email, hashed, verify_token, verify_expires, now()),
+            )).fetchone()
+        except psycopg.errors.UniqueViolation:
             raise HTTPException(409, "email already registered")
-        row = await (await conn.execute(
-            "INSERT INTO users (email, password, email_verified, verify_token, verify_token_expires, created_at)"
-            " VALUES (%s, %s, FALSE, %s, %s, %s) RETURNING id, role",
-            (email, hashed, verify_token, verify_expires, now()),
-        )).fetchone()
     try:
         await send_verification_email(email, verify_token)
     except Exception:
@@ -275,8 +291,11 @@ async def auth_claim(body: dict[str, Any], user: dict = Depends(require_user)):
     return {"agent_id": agent["id"], "status": "claimed"}
 
 
-@router.get("/auth/verify")
-async def auth_verify(token: str = Query(...)):
+@router.post("/auth/verify")
+async def auth_verify(body: dict[str, Any]):
+    token = body.get("token", "")
+    if not token:
+        raise HTTPException(400, "token required")
     async with get_db() as conn:
         row = await (await conn.execute(
             "SELECT id, email, email_verified, verify_token_expires FROM users WHERE verify_token = %s", (token,)
@@ -323,19 +342,8 @@ async def auth_github(body: dict[str, Any]):
     code = body.get("code", "")
     if not code:
         raise HTTPException(400, "code required")
-    gh_token, gh_id, gh_username = await asyncio.to_thread(_exchange_github_code, code)
-    # Fetch email (may need separate call if private)
-    def _fetch_email():
-        user_resp = httpx.get("https://api.github.com/user", headers=_gh_user_headers(gh_token), timeout=15).json()
-        email = user_resp.get("email")
-        if not email:
-            emails_resp = httpx.get("https://api.github.com/user/emails", headers=_gh_user_headers(gh_token), timeout=15)
-            if emails_resp.status_code == 200:
-                for e in emails_resp.json():
-                    if e.get("primary"):
-                        return e["email"]
-        return email or f"{gh_username}@users.noreply.github.com"
-    gh_email = (await asyncio.to_thread(_fetch_email)).lower()
+    gh_token, gh_id, gh_username, gh_email = await asyncio.to_thread(_exchange_github_code, code)
+    encrypted_token = _fernet.encrypt(gh_token.encode()).decode()
     async with get_db() as conn:
         # Check if user with this github_id already exists
         row = await (await conn.execute(
@@ -344,7 +352,7 @@ async def auth_github(body: dict[str, Any]):
         if row:
             await conn.execute(
                 "UPDATE users SET github_token = %s, github_username = %s, github_connected_at = %s WHERE id = %s",
-                (gh_token, gh_username, now(), row["id"]),
+                (encrypted_token, gh_username, now(), row["id"]),
             )
             token = _create_jwt(row["id"], row["email"], row["role"])
             return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "github_username": gh_username}}
@@ -355,7 +363,7 @@ async def auth_github(body: dict[str, Any]):
         if row and row["email_verified"]:
             await conn.execute(
                 "UPDATE users SET github_id = %s, github_token = %s, github_username = %s, github_connected_at = %s WHERE id = %s",
-                (gh_id, gh_token, gh_username, now(), row["id"]),
+                (gh_id, encrypted_token, gh_username, now(), row["id"]),
             )
             token = _create_jwt(row["id"], row["email"], row["role"])
             return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "github_username": gh_username}}
@@ -363,7 +371,7 @@ async def auth_github(body: dict[str, Any]):
         row = await (await conn.execute(
             "INSERT INTO users (email, email_verified, github_id, github_username, github_token, github_connected_at, created_at)"
             " VALUES (%s, TRUE, %s, %s, %s, %s, %s) RETURNING id, role",
-            (gh_email, gh_id, gh_username, gh_token, now(), now()),
+            (gh_email, gh_id, gh_username, encrypted_token, now(), now()),
         )).fetchone()
     token = _create_jwt(row["id"], gh_email, row["role"])
     return JSONResponse(
@@ -377,7 +385,8 @@ async def auth_github_connect(body: dict[str, Any], user: dict = Depends(require
     code = body.get("code", "")
     if not code:
         raise HTTPException(400, "code required")
-    gh_token, gh_id, gh_username = await asyncio.to_thread(_exchange_github_code, code)
+    gh_token, gh_id, gh_username, _ = await asyncio.to_thread(_exchange_github_code, code)
+    encrypted_token = _fernet.encrypt(gh_token.encode()).decode()
     user_id = int(user["sub"])
     async with get_db() as conn:
         # Check if this GitHub account is already linked to another user
@@ -388,7 +397,7 @@ async def auth_github_connect(body: dict[str, Any], user: dict = Depends(require
             raise HTTPException(409, "this GitHub account is already linked to another user")
         await conn.execute(
             "UPDATE users SET github_id = %s, github_token = %s, github_username = %s, github_connected_at = %s WHERE id = %s",
-            (gh_id, gh_token, gh_username, now(), user_id),
+            (gh_id, encrypted_token, gh_username, now(), user_id),
         )
     return {"github_username": gh_username, "status": "connected"}
 
@@ -418,7 +427,7 @@ async def auth_github_repos(user: dict = Depends(require_user), page: int = 1, p
         )).fetchone()
     if not row or not row["github_token"]:
         raise HTTPException(400, "GitHub not connected")
-    gh_token = row["github_token"]
+    gh_token = _fernet.decrypt(row["github_token"].encode()).decode()
     def _fetch():
         resp = httpx.get("https://api.github.com/user/repos", params={
             "sort": "updated", "per_page": min(per_page, 100), "page": page,
@@ -581,7 +590,7 @@ async def create_private_task(body: dict[str, Any], user: dict = Depends(require
         )).fetchone()
         if not row or not row["github_token"]:
             raise HTTPException(400, "GitHub not connected — connect GitHub first")
-        gh_token = row["github_token"]
+        gh_token = _fernet.decrypt(row["github_token"].encode()).decode()
         # Validate repo access and check required files (in thread to avoid blocking)
         def _validate_repo():
             headers = _gh_user_headers(gh_token)
