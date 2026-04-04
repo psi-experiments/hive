@@ -250,7 +250,7 @@ def _json_default(obj):
     if isinstance(obj, datetime):
         return obj.isoformat()
     raise TypeError(f"Type {type(obj)} not JSON serializable")
-from .email import send_verification_code
+from .email import send_verification_code, send_password_reset_code
 from .github import get_github_app
 from .names import generate_name
 
@@ -432,6 +432,64 @@ async def auth_login(body: dict[str, Any]):
         raise HTTPException(401, "invalid email or password")
     token = _create_jwt(row["id"], row["email"], row["role"])
     return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"]}}
+
+@router.post("/auth/forgot-password")
+async def auth_forgot_password(body: dict[str, Any]):
+    email = body.get("email", "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "valid email required")
+    code = _generate_code()
+    expires = now() + timedelta(minutes=10)
+    async with get_db() as conn:
+        user = await (await conn.execute(
+            "SELECT id FROM users WHERE email = %s", (email,)
+        )).fetchone()
+        if user:
+            await conn.execute(
+                "INSERT INTO password_resets (email, code, expires_at, attempts, created_at)"
+                " VALUES (%s, %s, %s, 0, %s)"
+                " ON CONFLICT (email) DO UPDATE SET code = %s, expires_at = %s, attempts = 0",
+                (email, code, expires, now(), code, expires),
+            )
+            try:
+                await send_password_reset_code(email, code)
+            except Exception:
+                pass
+    return {"status": "sent"}
+
+
+@router.post("/auth/reset-password")
+async def auth_reset_password(body: dict[str, Any]):
+    email = body.get("email", "").strip().lower()
+    code = body.get("code", "").strip()
+    new_password = body.get("password", "")
+    if not email or not code:
+        raise HTTPException(400, "email and code required")
+    if len(new_password) < 8:
+        raise HTTPException(400, "password must be at least 8 characters")
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT code, expires_at, attempts FROM password_resets WHERE email = %s", (email,)
+        )).fetchone()
+    if not row:
+        raise HTTPException(400, "no reset requested \u2014 use forgot password first")
+    if row["attempts"] >= 5:
+        raise HTTPException(429, "too many attempts \u2014 request a new code")
+    if row["code"] != code:
+        async with get_db() as conn:
+            await conn.execute(
+                "UPDATE password_resets SET attempts = attempts + 1 WHERE email = %s", (email,)
+            )
+        raise HTTPException(400, "invalid code")
+    if row["expires_at"] < now():
+        raise HTTPException(400, "code expired \u2014 request a new one")
+    hashed = _hash_password(new_password)
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE users SET password = %s WHERE email = %s", (hashed, email)
+        )
+        await conn.execute("DELETE FROM password_resets WHERE email = %s", (email,))
+    return {"status": "password_reset"}
 
 
 @router.get("/auth/me")
@@ -1782,8 +1840,10 @@ async def add_skill(task_id: str, body: dict[str, Any], token: str = Query(...),
                 source_run_id = run_row["id"]
         skill_item_id = body.get("item_id")
         if skill_item_id:
-            si = await (await conn.execute("SELECT id FROM items WHERE id = %s AND task_id = %s AND deleted_at IS NULL", (skill_item_id, task_id))).fetchone()
-            if not si: skill_item_id = None
+            if not await (await conn.execute(
+                "SELECT id FROM items WHERE id = %s AND task_id = %s AND deleted_at IS NULL", (skill_item_id, task_id),
+            )).fetchone():
+                raise HTTPException(400, "invalid item_id")
         row = await (await conn.execute(
             "INSERT INTO skills (task_id, agent_id, name, description, code_snippet, source_run_id, score_delta, upvotes, created_at, item_id)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s, %s) RETURNING *",
