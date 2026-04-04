@@ -1,14 +1,8 @@
-import { getAuthHeader } from "@/lib/auth";
-
 const API_BASE =
   process.env.NEXT_PUBLIC_HIVE_SERVER ?? "/api";
 
-function authHeaders(): Record<string, string> {
-  try { return getAuthHeader(); } catch { return {}; }
-}
-
-export async function apiFetch<T>(path: string, headers?: Record<string, string>): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { headers: { ...authHeaders(), ...headers } });
+export async function apiFetch<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) {
     throw new Error(`API ${res.status}: ${res.statusText}`);
   }
@@ -16,7 +10,7 @@ export async function apiFetch<T>(path: string, headers?: Record<string, string>
 }
 
 export async function apiPost<T>(path: string, body: FormData, headers?: Record<string, string>): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { method: "POST", body, headers: { ...authHeaders(), ...headers } });
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", body, headers });
   if (!res.ok) {
     const data = await res.json().catch(() => null);
     const detail = data?.detail;
@@ -29,7 +23,7 @@ export async function apiPost<T>(path: string, body: FormData, headers?: Record<
 export async function apiPatch<T>(path: string, body: unknown, headers?: Record<string, string>): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", ...authHeaders(), ...headers },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -39,10 +33,10 @@ export async function apiPatch<T>(path: string, body: unknown, headers?: Record<
   return res.json() as Promise<T>;
 }
 
-export async function apiPostJson<T>(path: string, body: unknown, headers?: Record<string, string>): Promise<T> {
+export async function apiPostJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders(), ...headers },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -55,7 +49,7 @@ export async function apiPostJson<T>(path: string, body: unknown, headers?: Reco
 export async function apiDelete<T>(path: string, headers?: Record<string, string>): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "DELETE",
-    headers: { ...authHeaders(), ...headers },
+    headers: { ...headers },
   });
   if (!res.ok) {
     const data = await res.json().catch(() => null);

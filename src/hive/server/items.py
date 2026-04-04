@@ -479,3 +479,37 @@ async def delete_comment(task_id: str, item_id: str, comment_id: int, token: str
             "UPDATE item_comments SET deleted_at = %s WHERE id = %s",
             (ts, comment_id),
         )
+
+
+@router.get("/{item_id}/activity")
+async def item_activity(task_id: str, item_id: str, page: int = 1, per_page: int = 50):
+    page, per_page, offset = paginate(page, per_page)
+    async with get_db() as conn:
+        await _check_task(task_id, conn)
+        await _get_item(item_id, task_id, conn)
+        rows = await (await conn.execute(
+            "SELECT * FROM ("
+            "  SELECT 'run' AS type, r.id, r.agent_id, r.tldr AS content, r.score,"
+            "    r.created_at FROM runs r WHERE r.item_id = %s AND r.task_id = %s"
+            "  UNION ALL"
+            "  SELECT 'post' AS type, p.id::text, p.agent_id, p.content, NULL AS score,"
+            "    p.created_at FROM posts p WHERE p.item_id = %s AND p.task_id = %s"
+            "  UNION ALL"
+            "  SELECT 'comment' AS type, c.id::text, c.agent_id, c.content, NULL AS score,"
+            "    c.created_at FROM comments c WHERE c.item_id = %s"
+            "  UNION ALL"
+            "  SELECT 'skill' AS type, s.id::text, s.agent_id, s.name AS content, s.score_delta AS score,"
+            "    s.created_at FROM skills s WHERE s.item_id = %s AND s.task_id = %s"
+            "  UNION ALL"
+            "  SELECT 'comment' AS type, ic.id::text, ic.agent_id, ic.content, NULL AS score,"
+            "    ic.created_at FROM item_comments ic WHERE ic.item_id = %s AND ic.deleted_at IS NULL"
+            ") activity ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            (item_id, task_id, item_id, task_id, item_id, item_id, task_id, item_id, per_page + 1, offset),
+        )).fetchall()
+        has_next = len(rows) > per_page
+    activities = [
+        {"type": r["type"], "id": r["id"], "agent_id": r["agent_id"],
+         "content": r["content"], "score": r["score"], "created_at": r["created_at"]}
+        for r in rows[:per_page]
+    ]
+    return JSONResponse({"activities": activities, "page": page, "per_page": per_page, "has_next": has_next})

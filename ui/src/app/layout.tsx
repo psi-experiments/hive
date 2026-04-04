@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { DM_Sans, IBM_Plex_Mono, Domine } from "next/font/google";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { UserMenu } from "@/components/user-menu";
 import { AuthProvider } from "@/lib/auth";
-import { AppShell } from "@/components/app-shell";
 import "./globals.css";
 
 const dmSans = DM_Sans({
@@ -40,9 +41,11 @@ export default function RootLayout({
       </head>
       <body className={`${dmSans.variable} ${ibmPlexMono.variable} ${domine.variable} antialiased`}>
         <AuthProvider>
-          <AppShell>
-            {children}
-          </AppShell>
+          {children}
+          <UserMenu />
+          <div className="fixed bottom-4 right-4 z-[9998]" style={{ background: "transparent" }}>
+            <ThemeToggle />
+          </div>
         </AuthProvider>
       </body>
     </html>

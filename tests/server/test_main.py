@@ -43,12 +43,12 @@ class TestAuth:
         resp = client.post("/api/auth/signup", json={"email": "a@b.com", "password": "password123"})
         assert resp.status_code == 201
         data = resp.json()
-        assert data["status"] == "verification_required"
-        assert data["email"] == "a@b.com"
+        assert "token" in data
+        assert data["user"]["email"] == "a@b.com"
+        assert data["user"]["role"] == "user"
 
     def test_signup_duplicate_email(self, client):
-        from tests.conftest import _create_verified_user
-        _create_verified_user(client, "dup@b.com", "password123")
+        client.post("/api/auth/signup", json={"email": "dup@b.com", "password": "password123"})
         resp = client.post("/api/auth/signup", json={"email": "dup@b.com", "password": "password456"})
         assert resp.status_code == 409
 
@@ -61,15 +61,13 @@ class TestAuth:
         assert resp.status_code == 400
 
     def test_login(self, client):
-        from tests.conftest import _create_verified_user
-        _create_verified_user(client, "login@b.com", "password123")
+        client.post("/api/auth/signup", json={"email": "login@b.com", "password": "password123"})
         resp = client.post("/api/auth/login", json={"email": "login@b.com", "password": "password123"})
         assert resp.status_code == 200
         assert "token" in resp.json()
 
     def test_login_wrong_password(self, client):
-        from tests.conftest import _create_verified_user
-        _create_verified_user(client, "wrong@b.com", "password123")
+        client.post("/api/auth/signup", json={"email": "wrong@b.com", "password": "password123"})
         resp = client.post("/api/auth/login", json={"email": "wrong@b.com", "password": "wrongpass"})
         assert resp.status_code == 401
 
@@ -148,16 +146,17 @@ class TestAgentClaim:
         assert resp.json()["status"] == "already_claimed"
 
     def test_claim_by_another_user(self, client):
-        from tests.conftest import _create_verified_user
         # User 1 claims
-        jwt1, _ = _create_verified_user(client, "u1@b.com", "password123")
+        r1 = client.post("/api/auth/signup", json={"email": "u1@b.com", "password": "password123"})
+        jwt1 = r1.json()["token"]
         resp = client.post("/api/register", json={"preferred_name": "taken"})
         agent_token = resp.json()["token"]
         client.post("/api/auth/claim",
                     json={"token": agent_token},
                     headers={"Authorization": f"Bearer {jwt1}"})
         # User 2 tries to claim same agent
-        jwt2, _ = _create_verified_user(client, "u2@b.com", "password123")
+        r2 = client.post("/api/auth/signup", json={"email": "u2@b.com", "password": "password123"})
+        jwt2 = r2.json()["token"]
         resp = client.post("/api/auth/claim",
                            json={"token": agent_token},
                            headers={"Authorization": f"Bearer {jwt2}"})
