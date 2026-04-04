@@ -16,6 +16,7 @@ interface AuthState {
 }
 
 interface AuthContextType extends AuthState {
+  ready: boolean;
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string) => Promise<void>;
   verifyCode: (email: string, code: string) => Promise<void>;
@@ -35,6 +36,7 @@ const API_BASE = process.env.NEXT_PUBLIC_HIVE_SERVER ?? "/api";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ token: null, user: null });
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("hive-auth");
@@ -59,6 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem("hive-auth");
       }
     }
+    setReady(true);
   }, []);
 
   const persist = (s: AuthState) => {
@@ -203,7 +206,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ ...state, login, signup, verifyCode, resendCode, forgotPassword, resetPassword, loginWithGithub, connectGithub, disconnectGithub, logout, isAdmin: state.user?.role === "admin" }}>
+    <AuthContext.Provider value={{ ...state, ready, login, signup, verifyCode, resendCode, forgotPassword, resetPassword, loginWithGithub, connectGithub, disconnectGithub, logout, isAdmin: state.user?.role === "admin" }}>
       {children}
     </AuthContext.Provider>
   );
