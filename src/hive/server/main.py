@@ -7,9 +7,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
+import base64
+import hashlib
+
 import bcrypt
+import httpx
 import jwt
 import psycopg.errors
+from cryptography.fernet import Fernet
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse as _BaseJSONResponse
@@ -18,15 +23,117 @@ from .db import init_pool, close_pool, get_db, get_db_sync, now, paginate
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 JWT_SECRET = os.environ.get("JWT_SECRET", "hive-dev-secret-change-me")
+
+# Derive a Fernet key from JWT_SECRET for encrypting GitHub tokens
+_fernet_key = base64.urlsafe_b64encode(hashlib.sha256(JWT_SECRET.encode()).digest())
+_fernet = Fernet(_fernet_key)
+
+
+def _encrypt(value: str | None) -> str | None:
+    if not value:
+        return None
+    return _fernet.encrypt(value.encode()).decode()
+
+
+def _decrypt(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return _fernet.decrypt(value.encode()).decode()
+    except Exception:
+        return value  # fallback: return as-is for unencrypted legacy tokens
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRY_HOURS = 24
+JWT_EXPIRY_HOURS = 24 * 7  # 1 week
+GITHUB_USER_APP_CLIENT_ID = os.environ.get("GITHUB_USER_APP_CLIENT_ID", "")
+GITHUB_USER_APP_CLIENT_SECRET = os.environ.get("GITHUB_USER_APP_CLIENT_SECRET", "")
+GITHUB_USER_APP_SLUG = os.environ.get("GITHUB_USER_APP_SLUG", "")
+
+
+def _gh_user_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+
+def _exchange_github_code(code: str) -> dict:
+    if not GITHUB_USER_APP_CLIENT_ID or not GITHUB_USER_APP_CLIENT_SECRET:
+        raise HTTPException(501, "GitHub OAuth not configured")
+    resp = httpx.post("https://github.com/login/oauth/access_token", json={
+        "client_id": GITHUB_USER_APP_CLIENT_ID,
+        "client_secret": GITHUB_USER_APP_CLIENT_SECRET,
+        "code": code,
+    }, headers={"Accept": "application/json"}, timeout=15)
+    if resp.status_code != 200:
+        raise HTTPException(502, "GitHub OAuth exchange failed")
+    data = resp.json()
+    gh_token = data.get("access_token")
+    if not gh_token:
+        raise HTTPException(400, data.get("error_description", "OAuth exchange failed"))
+    refresh_token = data.get("refresh_token")
+    expires_in = data.get("expires_in")
+    gh_user = httpx.get("https://api.github.com/user", headers=_gh_user_headers(gh_token), timeout=15).json()
+    gh_id = gh_user.get("id")
+    gh_username = gh_user.get("login", "")
+    gh_avatar = gh_user.get("avatar_url", "")
+    if not gh_id:
+        raise HTTPException(502, "failed to fetch GitHub user info")
+    return {
+        "token": gh_token, "refresh_token": refresh_token, "expires_in": expires_in,
+        "id": gh_id, "username": gh_username, "avatar": gh_avatar,
+    }
+
+
+def _refresh_github_token(refresh_token: str) -> dict | None:
+    """Refresh an expired GitHub user access token."""
+    if not refresh_token:
+        return None
+    resp = httpx.post("https://github.com/login/oauth/access_token", json={
+        "client_id": GITHUB_USER_APP_CLIENT_ID,
+        "client_secret": GITHUB_USER_APP_CLIENT_SECRET,
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    }, headers={"Accept": "application/json"}, timeout=15)
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    if not data.get("access_token"):
+        return None
+    return {
+        "token": data["access_token"],
+        "refresh_token": data.get("refresh_token", refresh_token),
+        "expires_in": data.get("expires_in"),
+    }
+
+
+async def _get_valid_github_token(user_id: int) -> str:
+    """Get a valid GitHub token, refreshing if expired."""
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT github_token, github_refresh_token, github_token_expires FROM users WHERE id = %s",
+            (user_id,),
+        )).fetchone()
+        if not row or not row["github_token"]:
+            raise HTTPException(400, "GitHub not connected")
+        # If no expiry set (old OAuth tokens) or still valid, decrypt and return
+        if not row["github_token_expires"] or row["github_token_expires"] > now():
+            return _decrypt(row["github_token"])
+        # Try to refresh
+        refreshed = await asyncio.to_thread(_refresh_github_token, _decrypt(row["github_refresh_token"]))
+        if not refreshed:
+            raise HTTPException(401, "GitHub token expired — please reconnect")
+        token_expires = now() + timedelta(seconds=refreshed["expires_in"]) if refreshed["expires_in"] else None
+        await conn.execute(
+            "UPDATE users SET github_token = %s, github_refresh_token = %s, github_token_expires = %s WHERE id = %s",
+            (_encrypt(refreshed["token"]), _encrypt(refreshed["refresh_token"]), token_expires, user_id),
+        )
+        return refreshed["token"]
 
 
 def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
-def _check_password(password: str, hashed: str) -> bool:
+def _check_password(password: str, hashed: str | None) -> bool:
+    if not hashed:
+        return False
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
@@ -71,6 +178,69 @@ def require_admin(x_admin_key: str = "", authorization: str = ""):
     raise HTTPException(403, "admin access required")
 
 
+def _get_user_id_from_auth(authorization: str = "") -> int | None:
+    """Extract user_id from JWT, or None if not authenticated."""
+    if authorization.startswith("Bearer "):
+        try:
+            payload = _decode_jwt(authorization.removeprefix("Bearer ").strip())
+            return int(payload["sub"])
+        except (HTTPException, KeyError, ValueError):
+            pass
+    return None
+
+
+async def require_admin_or_task_owner(task_id: str, x_admin_key: str = "", authorization: str = ""):
+    """Allow admin access OR task owner access."""
+    # Admin check (static key or admin role)
+    if ADMIN_KEY and x_admin_key == ADMIN_KEY:
+        return
+    user_id = _get_user_id_from_auth(authorization)
+    if authorization.startswith("Bearer "):
+        try:
+            payload = _decode_jwt(authorization.removeprefix("Bearer ").strip())
+            if payload.get("role") == "admin":
+                return
+        except HTTPException:
+            pass
+    # Task owner check
+    if user_id:
+        async with get_db() as conn:
+            row = await (await conn.execute(
+                "SELECT owner_id FROM tasks WHERE id = %s", (task_id,)
+            )).fetchone()
+            if row and row["owner_id"] == user_id:
+                return
+    raise HTTPException(403, "admin or task owner access required")
+
+
+async def require_task_access(task_id: str, authorization: str = "", x_admin_key: str = ""):
+    """Public tasks: open to all. Private tasks: require owner or admin."""
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT visibility, owner_id FROM tasks WHERE id = %s", (task_id,)
+        )).fetchone()
+        if not row:
+            raise HTTPException(404, "task not found")
+        if row["visibility"] == "public":
+            return
+        # Admin static key
+        if ADMIN_KEY and x_admin_key == ADMIN_KEY:
+            return
+        # JWT: admin role or owner match
+        user_id = _get_user_id_from_auth(authorization)
+        if user_id:
+            if user_id == row["owner_id"]:
+                return
+            try:
+                payload = _decode_jwt(authorization.removeprefix("Bearer ").strip())
+                if payload.get("role") == "admin":
+                    return
+            except HTTPException:
+                pass
+        # Future: check task_permissions table
+        raise HTTPException(404, "task not found")
+
+
 class JSONResponse(_BaseJSONResponse):
     def render(self, content) -> bytes:
         return json.dumps(content, default=_json_default).encode("utf-8")
@@ -80,6 +250,7 @@ def _json_default(obj):
     if isinstance(obj, datetime):
         return obj.isoformat()
     raise TypeError(f"Type {type(obj)} not JSON serializable")
+from .email import send_verification_code
 from .github import get_github_app
 from .names import generate_name
 
@@ -152,6 +323,11 @@ router = APIRouter(prefix="/api")
 
 # --- Auth endpoints ---
 
+def _generate_code() -> str:
+    import secrets
+    return f"{secrets.randbelow(1000000):06d}"
+
+
 @router.post("/auth/signup")
 async def auth_signup(body: dict[str, Any]):
     email = body.get("email", "").strip().lower()
@@ -161,18 +337,79 @@ async def auth_signup(body: dict[str, Any]):
     if len(password) < 8:
         raise HTTPException(400, "password must be at least 8 characters")
     hashed = _hash_password(password)
+    code = _generate_code()
+    expires = now() + timedelta(minutes=10)
     async with get_db() as conn:
         existing = await (await conn.execute(
             "SELECT id FROM users WHERE email = %s", (email,)
         )).fetchone()
         if existing:
             raise HTTPException(409, "email already registered")
+        # Upsert into pending_signups (allows re-signup if code expired)
+        await conn.execute(
+            "INSERT INTO pending_signups (email, password, code, expires_at, created_at)"
+            " VALUES (%s, %s, %s, %s, %s)"
+            " ON CONFLICT (email) DO UPDATE SET password = %s, code = %s, expires_at = %s",
+            (email, hashed, code, expires, now(), hashed, code, expires),
+        )
+    try:
+        await send_verification_code(email, code)
+    except Exception:
+        pass
+    return JSONResponse({"status": "verification_required", "email": email}, status_code=201)
+
+
+@router.post("/auth/verify-code")
+async def auth_verify_code(body: dict[str, Any]):
+    email = body.get("email", "").strip().lower()
+    code = body.get("code", "").strip()
+    if not email or not code:
+        raise HTTPException(400, "email and code required")
+    async with get_db() as conn:
         row = await (await conn.execute(
-            "INSERT INTO users (email, password, created_at) VALUES (%s, %s, %s) RETURNING id, role",
-            (email, hashed, now()),
+            "SELECT email, password, code, expires_at FROM pending_signups WHERE email = %s", (email,)
         )).fetchone()
-    token = _create_jwt(row["id"], email, row["role"])
-    return JSONResponse({"token": token, "user": {"id": row["id"], "email": email, "role": row["role"]}}, status_code=201)
+        if not row:
+            raise HTTPException(404, "no pending signup found — please sign up first")
+        if row["code"] != code:
+            raise HTTPException(400, "invalid code")
+        if row["expires_at"] < now():
+            raise HTTPException(400, "code expired — please request a new one")
+        # Create the real user
+        user_uuid = str(uuid.uuid4())
+        user_row = await (await conn.execute(
+            "INSERT INTO users (email, password, uuid, created_at)"
+            " VALUES (%s, %s, %s, %s) RETURNING id, role",
+            (row["email"], row["password"], user_uuid, now()),
+        )).fetchone()
+        # Clean up pending signup
+        await conn.execute("DELETE FROM pending_signups WHERE email = %s", (email,))
+    token = _create_jwt(user_row["id"], email, user_row["role"])
+    return {"token": token, "user": {"id": user_row["id"], "email": email, "role": user_row["role"]}}
+
+
+@router.post("/auth/resend-code")
+async def auth_resend_code(body: dict[str, Any]):
+    email = body.get("email", "").strip().lower()
+    if not email:
+        raise HTTPException(400, "email required")
+    code = _generate_code()
+    expires = now() + timedelta(minutes=10)
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT email FROM pending_signups WHERE email = %s", (email,)
+        )).fetchone()
+        if not row:
+            raise HTTPException(404, "no pending signup found")
+        await conn.execute(
+            "UPDATE pending_signups SET code = %s, expires_at = %s WHERE email = %s",
+            (code, expires, email),
+        )
+    try:
+        await send_verification_code(email, code)
+    except Exception:
+        raise HTTPException(502, "failed to send verification email")
+    return {"status": "sent"}
 
 
 @router.post("/auth/login")
@@ -196,7 +433,7 @@ async def auth_me(user: dict = Depends(require_user)):
     user_id = int(user["sub"])
     async with get_db() as conn:
         row = await (await conn.execute(
-            "SELECT id, email, role, created_at FROM users WHERE id = %s", (user_id,)
+            "SELECT id, email, role, github_username, avatar_url, uuid, created_at FROM users WHERE id = %s", (user_id,)
         )).fetchone()
         if not row:
             raise HTTPException(404, "user not found")
@@ -205,7 +442,8 @@ async def auth_me(user: dict = Depends(require_user)):
             (user_id,),
         )).fetchall()
     return {
-        "id": row["id"], "email": row["email"], "role": row["role"], "created_at": row["created_at"],
+        "id": row["id"], "email": row["email"], "role": row["role"],
+        "github_username": row["github_username"], "avatar_url": row["avatar_url"], "uuid": row["uuid"], "created_at": row["created_at"],
         "agents": [{"id": a["id"], "registered_at": a["registered_at"], "last_seen_at": a["last_seen_at"], "total_runs": a["total_runs"]} for a in agents],
     }
 
@@ -232,6 +470,164 @@ async def auth_claim(body: dict[str, Any], user: dict = Depends(require_user)):
             "UPDATE agents SET user_id = %s WHERE id = %s", (user_id, agent["id"])
         )
     return {"agent_id": agent["id"], "status": "claimed"}
+
+
+
+
+@router.get("/auth/config")
+async def auth_config():
+    """Return auth configuration (which OAuth providers are available)."""
+    providers = []
+    if GITHUB_USER_APP_CLIENT_ID and GITHUB_USER_APP_CLIENT_SECRET:
+        providers.append("github")
+    result: dict = {"oauth_providers": providers}
+    if GITHUB_USER_APP_SLUG:
+        result["github_app_install_url"] = f"https://github.com/apps/{GITHUB_USER_APP_SLUG}/installations/new"
+    return result
+
+
+@router.get("/auth/github/authorize")
+async def auth_github_authorize(mode: str = Query("login"), redirect_uri: str = Query(...)):
+    """Return the GitHub OAuth authorization URL."""
+    if not GITHUB_USER_APP_CLIENT_ID:
+        raise HTTPException(501, "GitHub OAuth not configured")
+    url = (
+        f"https://github.com/login/oauth/authorize"
+        f"?client_id={GITHUB_USER_APP_CLIENT_ID}"
+        f"&scope=repo,read:user,user:email"
+        f"&redirect_uri={redirect_uri}"
+        f"&state={mode}"
+    )
+    return {"url": url}
+
+
+@router.post("/auth/github")
+async def auth_github(body: dict[str, Any]):
+    code = body.get("code", "")
+    if not code:
+        raise HTTPException(400, "code required")
+    gh = await asyncio.to_thread(_exchange_github_code, code)
+    gh_token_plain, gh_id, gh_username, gh_avatar = gh["token"], gh["id"], gh["username"], gh["avatar"]
+    gh_refresh_plain = gh.get("refresh_token")
+    gh_expires = now() + timedelta(seconds=gh["expires_in"]) if gh.get("expires_in") else None
+    gh_token_enc, gh_refresh_enc = _encrypt(gh_token_plain), _encrypt(gh_refresh_plain)
+    # Fetch email (may need separate call if private)
+    def _fetch_email():
+        user_resp = httpx.get("https://api.github.com/user", headers=_gh_user_headers(gh_token_plain), timeout=15).json()
+        email = user_resp.get("email")
+        if not email:
+            emails_resp = httpx.get("https://api.github.com/user/emails", headers=_gh_user_headers(gh_token_plain), timeout=15)
+            if emails_resp.status_code == 200:
+                for e in emails_resp.json():
+                    if e.get("primary"):
+                        return e["email"]
+        return email or f"{gh_username}@users.noreply.github.com"
+    gh_email = (await asyncio.to_thread(_fetch_email)).lower()
+    async with get_db() as conn:
+        # Check if user with this github_id already exists
+        row = await (await conn.execute(
+            "SELECT id, email, role FROM users WHERE github_id = %s", (gh_id,)
+        )).fetchone()
+        if row:
+            await conn.execute(
+                "UPDATE users SET github_token = %s, github_refresh_token = %s, github_token_expires = %s, github_username = %s, avatar_url = %s, github_connected_at = %s WHERE id = %s",
+                (gh_token_enc, gh_refresh_enc, gh_expires, gh_username, gh_avatar, now(), row["id"]),
+            )
+            token = _create_jwt(row["id"], row["email"], row["role"])
+            return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "github_username": gh_username, "avatar_url": gh_avatar}}
+        # Auto-link if email matches (all users in DB are verified)
+        row = await (await conn.execute(
+            "SELECT id, email, role FROM users WHERE email = %s", (gh_email,)
+        )).fetchone()
+        if row:
+            await conn.execute(
+                "UPDATE users SET github_id = %s, github_token = %s, github_refresh_token = %s, github_token_expires = %s, github_username = %s, avatar_url = %s, github_connected_at = %s WHERE id = %s",
+                (gh_id, gh_token_enc, gh_refresh_enc, gh_expires, gh_username, gh_avatar, now(), row["id"]),
+            )
+            token = _create_jwt(row["id"], row["email"], row["role"])
+            return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "github_username": gh_username, "avatar_url": gh_avatar}}
+        # Create new user (no password — GitHub-only, email verified via GitHub)
+        user_uuid = str(uuid.uuid4())
+        row = await (await conn.execute(
+            "INSERT INTO users (email, github_id, github_username, github_token, github_refresh_token, github_token_expires, avatar_url, github_connected_at, uuid, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, role",
+            (gh_email, gh_id, gh_username, gh_token_enc, gh_refresh_enc, gh_expires, gh_avatar, now(), user_uuid, now()),
+        )).fetchone()
+    token = _create_jwt(row["id"], gh_email, row["role"])
+    return JSONResponse(
+        {"token": token, "user": {"id": row["id"], "email": gh_email, "role": row["role"], "github_username": gh_username, "avatar_url": gh_avatar}},
+        status_code=201,
+    )
+
+
+@router.post("/auth/github/connect")
+async def auth_github_connect(body: dict[str, Any], user: dict = Depends(require_user)):
+    code = body.get("code", "")
+    if not code:
+        raise HTTPException(400, "code required")
+    gh = await asyncio.to_thread(_exchange_github_code, code)
+    gh_token_plain, gh_id, gh_username, gh_avatar = gh["token"], gh["id"], gh["username"], gh["avatar"]
+    gh_refresh_plain = gh.get("refresh_token")
+    gh_expires = now() + timedelta(seconds=gh["expires_in"]) if gh.get("expires_in") else None
+    user_id = int(user["sub"])
+    async with get_db() as conn:
+        # Check if this GitHub account is already linked to another user
+        existing = await (await conn.execute(
+            "SELECT id FROM users WHERE github_id = %s AND id != %s", (gh_id, user_id)
+        )).fetchone()
+        if existing:
+            raise HTTPException(409, "this GitHub account is already linked to another user")
+        await conn.execute(
+            "UPDATE users SET github_id = %s, github_token = %s, github_refresh_token = %s, github_token_expires = %s, github_username = %s, avatar_url = %s, github_connected_at = %s WHERE id = %s",
+            (gh_id, _encrypt(gh_token_plain), _encrypt(gh_refresh_plain), gh_expires, gh_username, gh_avatar, now(), user_id),
+        )
+    return {"github_username": gh_username, "avatar_url": gh_avatar, "status": "connected"}
+
+
+@router.delete("/auth/github")
+async def auth_github_disconnect(user: dict = Depends(require_user)):
+    user_id = int(user["sub"])
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT password FROM users WHERE id = %s", (user_id,)
+        )).fetchone()
+        if not row or not row["password"]:
+            raise HTTPException(400, "cannot disconnect GitHub — no password set. Set a password first.")
+        await conn.execute(
+            "UPDATE users SET github_id = NULL, github_token = NULL, github_refresh_token = NULL, github_token_expires = NULL, github_username = NULL, github_connected_at = NULL, avatar_url = NULL WHERE id = %s",
+            (user_id,),
+        )
+    return {"status": "disconnected"}
+
+
+@router.get("/auth/github/repos")
+async def auth_github_repos(user: dict = Depends(require_user), page: int = 1, per_page: int = 30):
+    user_id = int(user["sub"])
+    gh_token = await _get_valid_github_token(user_id)
+    def _fetch():
+        headers = _gh_user_headers(gh_token)
+        # Try installation-scoped repos (GitHub App)
+        inst_resp = httpx.get("https://api.github.com/user/installations", headers=headers, timeout=15)
+        if inst_resp.status_code == 200:
+            installations = inst_resp.json().get("installations", [])
+            if installations:
+                repos = []
+                for inst in installations:
+                    r = httpx.get(
+                        f"https://api.github.com/user/installations/{inst['id']}/repositories",
+                        params={"per_page": min(per_page, 100), "page": page},
+                        headers=headers, timeout=15,
+                    )
+                    if r.status_code == 200:
+                        for repo in r.json().get("repositories", []):
+                            repos.append({"full_name": repo["full_name"], "name": repo["name"], "private": repo["private"],
+                                          "description": repo.get("description"), "url": repo["html_url"],
+                                          "default_branch": repo["default_branch"], "updated_at": repo["updated_at"]})
+                return {"repos": repos, "installed": True}
+        # App not installed — return empty with install flag
+        return {"repos": [], "installed": False}
+    result = await asyncio.to_thread(_fetch)
+    return {"repos": result["repos"], "installed": result["installed"], "page": page}
 
 
 async def get_agent(token: str, conn) -> str:
@@ -339,7 +735,7 @@ async def create_task(
     _validate_task_description(description)
     async with get_db() as conn:
         if await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (id,))).fetchone():
-            raise HTTPException(409, f"task '{id}' already exists")
+            raise HTTPException(409, "A public or private task with this ID already exists. Try a different ID.")
     try:
         gh = get_github_app()
     except Exception as e:
@@ -356,16 +752,91 @@ async def create_task(
     return JSONResponse({"id": id, "name": name, "repo_url": repo_url, "status": "active"}, status_code=201)
 
 
+@router.get("/tasks/mine")
+async def list_my_tasks(user: dict = Depends(require_user)):
+    user_id = int(user["sub"])
+    async with get_db() as conn:
+        rows = await (await conn.execute(
+            "SELECT t.*, COUNT(r.id) AS total_runs, MAX(r.score) AS best_score_calc,"
+            " COUNT(DISTINCT r.agent_id) AS agents_contributing,"
+            " GREATEST(MAX(r.created_at), (SELECT MAX(p.created_at) FROM posts p WHERE p.task_id = t.id)) AS last_activity"
+            " FROM tasks t LEFT JOIN runs r ON r.task_id = t.id"
+            " WHERE t.owner_id = %s GROUP BY t.id ORDER BY t.created_at DESC",
+            (user_id,),
+        )).fetchall()
+    tasks = [{
+        "id": r["id"], "name": r["name"], "description": r["description"],
+        "repo_url": r["repo_url"], "config": r.get("config"),
+        "created_at": r["created_at"],
+        "stats": {
+            "total_runs": r["total_runs"],
+            "improvements": r.get("improvements", 0),
+            "agents_contributing": r["agents_contributing"],
+            "best_score": r["best_score_calc"],
+            "last_activity": r["last_activity"],
+        },
+    } for r in rows]
+    return {"tasks": tasks}
+
+
+@router.post("/tasks/private", status_code=201)
+async def create_private_task(body: dict[str, Any], user: dict = Depends(require_user)):
+    repo_full_name = body.get("repo", "").strip()
+    task_id = body.get("id", "").strip()
+    task_name = body.get("name", "").strip()
+    description = body.get("description", "").strip()
+    branch = body.get("branch", "main").strip()
+    if not repo_full_name:
+        raise HTTPException(400, "repo is required (e.g. 'owner/repo-name')")
+    if not task_id:
+        raise HTTPException(400, "task id is required")
+    _validate_task_id(task_id)
+    if not task_name:
+        task_name = task_id
+    if description:
+        _validate_task_description(description)
+    user_id = int(user["sub"])
+    gh_token = await _get_valid_github_token(user_id)
+    async with get_db() as conn:
+        # Validate repo access and check required files (in thread to avoid blocking)
+        def _validate_repo():
+            headers = _gh_user_headers(gh_token)
+            repo_resp = httpx.get(f"https://api.github.com/repos/{repo_full_name}", headers=headers, timeout=15)
+            if repo_resp.status_code == 404:
+                raise HTTPException(404, "repo not found or no access")
+            if repo_resp.status_code == 401:
+                raise HTTPException(401, "GitHub token expired — please reconnect")
+            if repo_resp.status_code != 200:
+                raise HTTPException(502, "failed to fetch repo from GitHub")
+            missing = [p for p in ["program.md", "eval/eval.sh"]
+                       if httpx.get(f"https://api.github.com/repos/{repo_full_name}/contents/{p}?ref={branch}",
+                                    headers=headers, timeout=15).status_code != 200]
+            if missing:
+                raise HTTPException(400, f"repo is missing required files: {', '.join(missing)}")
+            return repo_resp.json()["html_url"]
+        repo_url = await asyncio.to_thread(_validate_repo)
+        if await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
+            raise HTTPException(409, "A public or private task with this ID already exists. Try a different ID. We're migrating to separate ID pools for private tasks soon.")
+        await conn.execute(
+            "INSERT INTO tasks (id, name, description, repo_url, task_type, owner_id, visibility, source_repo, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (task_id, task_name, description, repo_url, "private", user_id, "private", repo_full_name, now()),
+        )
+    return JSONResponse({
+        "id": task_id, "name": task_name, "repo_url": repo_url,
+        "task_type": "private", "status": "active",
+    }, status_code=201)
+
+
 @router.patch("/tasks/{task_id}")
-async def update_task(task_id: str, body: dict[str, Any], token: str = Query(...)):
+async def update_task(task_id: str, body: dict[str, Any], token: str = Query(...),
+                      x_admin_key: str = Header(""), authorization: str = Header("")):
+    await require_admin_or_task_owner(task_id, x_admin_key, authorization)
     allowed = {"name", "description", "config"}
     updates = {k: v for k, v in body.items() if k in allowed}
     if not updates:
         raise HTTPException(400, "nothing to update (allowed: name, description, config)")
     async with get_db() as conn:
-        await get_agent(token, conn)
-        if not await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
-            raise HTTPException(404, "task not found")
         sets = ", ".join(f"{k} = %s" for k in updates)
         vals = list(updates.values()) + [task_id]
         await conn.execute(f"UPDATE tasks SET {sets} WHERE id = %s", vals)
@@ -380,13 +851,14 @@ async def sync_tasks(x_admin_key: str = Header(""), authorization: str = Header(
 
 
 @router.get("/tasks")
-async def list_tasks(q: str | None = Query(None), page: int = Query(1), per_page: int = Query(20)):
+async def list_tasks(q: str | None = Query(None), page: int = Query(1), per_page: int = Query(20),
+                     authorization: str = Header("")):
     page, per_page, offset = paginate(page, per_page)
     async with get_db() as conn:
-        where, params = "1=1", []
+        where, params = "t.visibility = 'public'", []
         if q:
-            where = "t.search_vec @@ plainto_tsquery('english', %s)"
-            params = [q]
+            where += " AND t.search_vec @@ plainto_tsquery('english', %s)"
+            params.append(q)
         params.extend([per_page + 1, offset])
         rows = await (await conn.execute(
             f"SELECT t.*, COUNT(r.id) AS total_runs, MAX(r.score) AS best_score_calc,"
@@ -415,7 +887,8 @@ async def list_tasks(q: str | None = Query(None), page: int = Query(1), per_page
 
 
 @router.get("/tasks/{task_id}")
-async def get_task(task_id: str):
+async def get_task(task_id: str, authorization: str = Header("")):
+    await require_task_access(task_id, authorization)
     async with get_db() as conn:
         row = await (await conn.execute("SELECT * FROM tasks WHERE id = %s", (task_id,))).fetchone()
         if not row: raise HTTPException(404, "task not found")
@@ -444,7 +917,8 @@ async def get_task(task_id: str):
 
 
 @router.post("/tasks/{task_id}/clone", status_code=201)
-async def clone_task(task_id: str, token: str = Query(...)):
+async def clone_task(task_id: str, token: str = Query(...), authorization: str = Header("")):
+    await require_task_access(task_id, authorization)
     # Phase 1: read from DB
     async with get_db() as conn:
         agent_id = await get_agent(token, conn)
@@ -482,7 +956,8 @@ async def clone_task(task_id: str, token: str = Query(...)):
 
 
 @router.post("/tasks/{task_id}/submit", status_code=201)
-async def submit_run(task_id: str, body: dict[str, Any], token: str = Query(...)):
+async def submit_run(task_id: str, body: dict[str, Any], token: str = Query(...), authorization: str = Header("")):
+    await require_task_access(task_id, authorization)
     ts = now()
     async with get_db() as conn:
         agent_id = await get_agent(token, conn)
@@ -538,12 +1013,11 @@ async def submit_run(task_id: str, body: dict[str, Any], token: str = Query(...)
 
 
 @router.get("/tasks/{task_id}/runs")
-async def list_runs(task_id: str, sort: str = Query("score"), view: str = Query("best_runs"),
+async def list_runs(task_id: str, authorization: str = Header(""), sort: str = Query("score"), view: str = Query("best_runs"),
               agent: str | None = Query(None), page: int = Query(1), per_page: int = Query(20)):
+    await require_task_access(task_id, authorization)
     page, per_page, offset = paginate(page, per_page)
     async with get_db() as conn:
-        if not await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
-            raise HTTPException(404, "task not found")
 
         if view == "contributors":
             rows = await (await conn.execute(
@@ -614,7 +1088,8 @@ async def list_runs(task_id: str, sort: str = Query("score"), view: str = Query(
 
 
 @router.get("/tasks/{task_id}/runs/{sha}")
-async def get_run(task_id: str, sha: str):
+async def get_run(task_id: str, sha: str, authorization: str = Header("")):
+    await require_task_access(task_id, authorization)
     _q = ("SELECT r.*, p.id AS post_id, f.fork_url, f.ssh_url AS fork_ssh_url, f.base_sha"
           " FROM runs r LEFT JOIN posts p ON p.run_id = r.id LEFT JOIN forks f ON f.id = r.fork_id")
     async with get_db() as conn:
@@ -644,7 +1119,7 @@ async def get_run(task_id: str, sha: str):
 @router.patch("/tasks/{task_id}/runs/{sha}")
 async def patch_run(task_id: str, sha: str, body: dict[str, Any],
                     x_admin_key: str = Header(""), authorization: str = Header("")):
-    require_admin(x_admin_key, authorization)
+    await require_admin_or_task_owner(task_id, x_admin_key, authorization)
     async with get_db() as conn:
         row = await (await conn.execute(
             "SELECT id FROM runs WHERE id = %s AND task_id = %s", (sha, task_id)
@@ -671,7 +1146,7 @@ async def patch_run(task_id: str, sha: str, body: dict[str, Any],
 @router.delete("/tasks/{task_id}/runs/{sha}")
 async def delete_run(task_id: str, sha: str, x_admin_key: str = Header(""), authorization: str = Header("")):
     """Delete a single run and its associated post, comments, and votes."""
-    require_admin(x_admin_key, authorization)
+    await require_admin_or_task_owner(task_id, x_admin_key, authorization)
     async with get_db() as conn:
         row = await (await conn.execute(
             "SELECT id FROM runs WHERE id = %s AND task_id = %s", (sha, task_id)
@@ -714,7 +1189,7 @@ async def delete_run(task_id: str, sha: str, x_admin_key: str = Header(""), auth
 @router.delete("/tasks/{task_id}/runs")
 async def delete_all_runs(task_id: str, x_admin_key: str = Header(""), authorization: str = Header("")):
     """Delete ALL runs for a task. Resets the leaderboard."""
-    require_admin(x_admin_key, authorization)
+    await require_admin_or_task_owner(task_id, x_admin_key, authorization)
     async with get_db() as conn:
         if not await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
             raise HTTPException(404, "task not found")
@@ -760,7 +1235,7 @@ async def delete_task(
     x_admin_key: str = Header(""), authorization: str = Header(""),
 ):
     """Delete an entire task and all associated data."""
-    require_admin(x_admin_key, authorization)
+    await require_admin_or_task_owner(task_id, x_admin_key, authorization)
     if confirm != task_id:
         raise HTTPException(400, f"confirm parameter must match task_id")
     async with get_db() as conn:
@@ -842,12 +1317,11 @@ async def delete_task(
 
 
 @router.post("/tasks/{task_id}/feed", status_code=201)
-async def post_to_feed(task_id: str, body: dict[str, Any], token: str = Query(...)):
+async def post_to_feed(task_id: str, body: dict[str, Any], token: str = Query(...), authorization: str = Header("")):
+    await require_task_access(task_id, authorization)
     ts = now()
     async with get_db() as conn:
         agent_id = await get_agent(token, conn)
-        if not await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
-            raise HTTPException(404, "task not found")
         kind = body.get("type")
         if kind == "post":
             run_id = body.get("run_id")
@@ -917,8 +1391,9 @@ async def post_to_feed(task_id: str, body: dict[str, Any], token: str = Query(..
 
 
 @router.get("/tasks/{task_id}/feed")
-async def get_feed(task_id: str, since: str | None = Query(None),
+async def get_feed(task_id: str, authorization: str = Header(""), since: str | None = Query(None),
              page: int = Query(1), per_page: int = Query(50), agent: str | None = Query(None)):
+    await require_task_access(task_id, authorization)
     page, per_page, offset = paginate(page, per_page)
     async with get_db() as conn:
         where, params = "p.task_id = %s", [task_id]
@@ -954,7 +1429,8 @@ async def get_feed(task_id: str, since: str | None = Query(None),
 
 
 @router.get("/tasks/{task_id}/feed/{post_id}")
-async def get_post(task_id: str, post_id: int, page: int = Query(1), per_page: int = Query(30)):
+async def get_post(task_id: str, post_id: int, authorization: str = Header(""), page: int = Query(1), per_page: int = Query(30)):
+    await require_task_access(task_id, authorization)
     page, per_page, offset = paginate(page, per_page)
     async with get_db() as conn:
         row = await (await conn.execute(
@@ -995,7 +1471,8 @@ async def get_post(task_id: str, post_id: int, page: int = Query(1), per_page: i
 
 
 @router.post("/tasks/{task_id}/feed/{post_id}/vote")
-async def vote(task_id: str, post_id: int, body: dict[str, Any], token: str = Query(...)):
+async def vote(task_id: str, post_id: int, body: dict[str, Any], token: str = Query(...), authorization: str = Header("")):
+    await require_task_access(task_id, authorization)
     vote_type = body.get("type")
     if vote_type not in ("up", "down"): raise HTTPException(400, "type must be 'up' or 'down'")
     async with get_db() as conn:
@@ -1013,7 +1490,8 @@ async def vote(task_id: str, post_id: int, body: dict[str, Any], token: str = Qu
 
 
 @router.post("/tasks/{task_id}/comments/{comment_id}/vote")
-async def vote_comment(task_id: str, comment_id: int, body: dict[str, Any], token: str = Query(...)):
+async def vote_comment(task_id: str, comment_id: int, body: dict[str, Any], token: str = Query(...), authorization: str = Header("")):
+    await require_task_access(task_id, authorization)
     vote_type = body.get("type")
     if vote_type not in ("up", "down"): raise HTTPException(400, "type must be 'up' or 'down'")
     async with get_db() as conn:
@@ -1036,7 +1514,8 @@ async def vote_comment(task_id: str, comment_id: int, body: dict[str, Any], toke
 
 
 @router.post("/tasks/{task_id}/claim", status_code=201)
-async def create_claim(task_id: str, body: dict[str, Any], token: str = Query(...)):
+async def create_claim(task_id: str, body: dict[str, Any], token: str = Query(...), authorization: str = Header("")):
+    await require_task_access(task_id, authorization)
     ts = now()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
     async with get_db() as conn:
@@ -1053,7 +1532,8 @@ async def create_claim(task_id: str, body: dict[str, Any], token: str = Query(..
 
 
 @router.get("/tasks/{task_id}/context")
-async def get_context(task_id: str):
+async def get_context(task_id: str, authorization: str = Header("")):
+    await require_task_access(task_id, authorization)
     async with get_db() as conn:
         task_row = await (await conn.execute("SELECT * FROM tasks WHERE id = %s", (task_id,))).fetchone()
         if not task_row: raise HTTPException(404, "task not found")
@@ -1110,7 +1590,8 @@ async def get_context(task_id: str):
 
 
 @router.get("/tasks/{task_id}/graph")
-async def get_graph(task_id: str, max_nodes: int = Query(200)):
+async def get_graph(task_id: str, authorization: str = Header(""), max_nodes: int = Query(200)):
+    await require_task_access(task_id, authorization)
     max_nodes = max(1, min(1000, max_nodes))
     async with get_db() as conn:
         if not await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
@@ -1128,10 +1609,11 @@ async def get_graph(task_id: str, max_nodes: int = Query(200)):
 
 
 @router.get("/tasks/{task_id}/search")
-async def search(task_id: str, q: str | None = Query(None),
+async def search(task_id: str, authorization: str = Header(""), q: str | None = Query(None),
            type: str | None = Query(None), sort: str = Query("recent"),
            agent: str | None = Query(None), since: str | None = Query(None),
            page: int = Query(1), per_page: int = Query(20)):
+    await require_task_access(task_id, authorization)
     page, per_page, offset = paginate(page, per_page)
     async with get_db() as conn:
         if not await (await conn.execute("SELECT id FROM tasks WHERE id = %s", (task_id,))).fetchone():
@@ -1249,7 +1731,8 @@ async def search(task_id: str, q: str | None = Query(None),
 
 
 @router.post("/tasks/{task_id}/skills", status_code=201)
-async def add_skill(task_id: str, body: dict[str, Any], token: str = Query(...)):
+async def add_skill(task_id: str, body: dict[str, Any], token: str = Query(...), authorization: str = Header("")):
+    await require_task_access(task_id, authorization)
     ts = now()
     async with get_db() as conn:
         agent_id = await get_agent(token, conn)
@@ -1275,7 +1758,8 @@ async def add_skill(task_id: str, body: dict[str, Any], token: str = Query(...))
 
 
 @router.get("/tasks/{task_id}/skills")
-async def list_skills(task_id: str, q: str | None = Query(None), page: int = Query(1), per_page: int = Query(20)):
+async def list_skills(task_id: str, authorization: str = Header(""), q: str | None = Query(None), page: int = Query(1), per_page: int = Query(20)):
+    await require_task_access(task_id, authorization)
     page, per_page, offset = paginate(page, per_page)
     async with get_db() as conn:
         if q:
@@ -1334,7 +1818,7 @@ async def get_global_feed(sort: str = Query("new"), page: int = Query(1), per_pa
             FROM posts p
             LEFT JOIN runs r ON r.id = p.run_id
             LEFT JOIN tasks t ON t.id = p.task_id
-            WHERE 1=1{task_filter}
+            WHERE t.visibility = 'public'{task_filter}
           )
           UNION ALL
           (
@@ -1345,7 +1829,7 @@ async def get_global_feed(sort: str = Query("new"), page: int = Query(1), per_pa
                    NULL::float AS score, NULL AS tldr,
                    0 AS comment_count
             FROM claims c LEFT JOIN tasks t ON t.id = c.task_id
-            WHERE c.expires_at > %s{claim_task_filter}
+            WHERE t.visibility = 'public' AND c.expires_at > %s{claim_task_filter}
           )
           UNION ALL
           (
@@ -1356,7 +1840,7 @@ async def get_global_feed(sort: str = Query("new"), page: int = Query(1), per_pa
                    NULL::float AS score, s.name AS tldr,
                    0 AS comment_count
             FROM skills s LEFT JOIN tasks t ON t.id = s.task_id
-            WHERE 1=1{skill_task_filter}
+            WHERE t.visibility = 'public'{skill_task_filter}
           )
         ) AS combined
         ORDER BY {order}
@@ -1389,8 +1873,8 @@ async def get_global_feed(sort: str = Query("new"), page: int = Query(1), per_pa
 async def get_global_stats():
     async with get_db() as conn:
         total_agents = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM agents")).fetchone())["cnt"]
-        total_tasks = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM tasks")).fetchone())["cnt"]
-        total_runs = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM runs")).fetchone())["cnt"]
+        total_tasks = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM tasks WHERE visibility = 'public'")).fetchone())["cnt"]
+        total_runs = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM runs r JOIN tasks t ON t.id = r.task_id WHERE t.visibility = 'public'")).fetchone())["cnt"]
     return {"total_agents": total_agents, "total_tasks": total_tasks, "total_runs": total_runs}
 
 
@@ -1400,15 +1884,3 @@ async def health():
 
 
 app.include_router(router)
-
-from .items import router as items_router  # noqa: E402
-app.include_router(items_router)
-
-# Serve kanban UI from /kanban
-import pathlib as _pathlib
-_kanban_dir = _pathlib.Path(__file__).resolve().parent.parent.parent.parent / "kanban"
-if _kanban_dir.is_dir():
-    from starlette.responses import FileResponse as _FileResponse
-    @app.get("/kanban")
-    async def kanban_ui():
-        return _FileResponse(_kanban_dir / "index.html")

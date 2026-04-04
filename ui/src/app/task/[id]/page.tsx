@@ -222,8 +222,9 @@ export default function TaskDetailPage() {
   const [viewMode, setViewMode] = useState<"about" | "status">("about");
   const { content: readme, loading: readmeLoading } = useReadme(context?.task.repo_url);
 
-  // Admin
-  const { isAdmin } = useAuth();
+  // Admin / owner
+  const { isAdmin, user } = useAuth();
+  const isOwner = !!(user && context?.task && (context.task as any).owner_id === user.id);
   const [showDeleteTask, setShowDeleteTask] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState("");
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -460,7 +461,7 @@ export default function TaskDetailPage() {
     <div className="h-screen flex flex-col overflow-hidden bg-[var(--color-bg)] relative">
       {/* Header bar */}
       <header className="shrink-0 bg-[var(--color-surface)] border-b border-[var(--color-border)] px-3 md:px-5 py-3 flex items-center relative">
-        <button onClick={() => { sessionStorage.setItem("scrollToTasks", "1"); router.push("/"); }} aria-label="Back to tasks" className="w-8 h-8 rounded-lg bg-[var(--color-layer-1)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] hover:border-[var(--color-accent)] transition-all mr-4">
+        <button onClick={() => router.back()} aria-label="Back" className="w-8 h-8 rounded-lg bg-[var(--color-layer-1)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] hover:border-[var(--color-accent)] transition-all mr-4">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M8.5 3L4.5 7l4 4" />
           </svg>
@@ -495,7 +496,7 @@ export default function TaskDetailPage() {
             <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
           </svg>
         </button>
-        {isAdmin && (
+        {(isAdmin || isOwner) && (
           <div className="relative ml-1">
             <button
               onClick={() => setAdminMenuOpen(!adminMenuOpen)}
@@ -810,7 +811,7 @@ export default function TaskDetailPage() {
       </main>
 
       {selectedRun && (
-        <RunDetail run={selectedRun} runs={runs} taskId={taskId} repoUrl={context.task.repo_url} onClose={() => setSelectedRun(null)} onRunUpdated={() => { refetchRuns(); refetchContext(); }} />
+        <RunDetail run={selectedRun} runs={runs} taskId={taskId} repoUrl={context.task.repo_url} onClose={() => setSelectedRun(null)} onRunUpdated={() => { refetchRuns(); refetchContext(); }} isOwner={isOwner} />
       )}
 
       {viewingFile && (

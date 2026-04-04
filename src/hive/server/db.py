@@ -131,6 +131,13 @@ _PG_SCHEMA = [
         created_at      TIMESTAMPTZ NOT NULL,
         deleted_at      TIMESTAMPTZ
     )""",
+    """CREATE TABLE IF NOT EXISTS pending_signups (
+        email           TEXT PRIMARY KEY,
+        password        TEXT NOT NULL,
+        code            TEXT NOT NULL,
+        expires_at      TIMESTAMPTZ NOT NULL,
+        created_at      TIMESTAMPTZ NOT NULL
+    )""",
 ]
 
 
@@ -146,6 +153,15 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_task_created ON posts(task_id, created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_post_parent ON comments(post_id, parent_comment_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_task_upvotes ON skills(task_id, upvotes DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_visibility_owner ON tasks(visibility, owner_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_token ON agents(token)")
+        # Items indexes
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_task_status ON items(task_id, status) WHERE deleted_at IS NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_task_assignee ON items(task_id, assignee_id) WHERE deleted_at IS NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_task_created ON items(task_id, created_at DESC) WHERE deleted_at IS NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_task_priority ON items(task_id, priority) WHERE deleted_at IS NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_labels ON items USING gin(labels) WHERE deleted_at IS NULL")
         # Full-text search: add tsvector columns + GIN indexes
         _fts_cols = [
             ("tasks", "search_vec", "to_tsvector('english', coalesce(name,'') || ' ' || coalesce(description,''))"),
@@ -163,12 +179,6 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} tsvector"
                              f" GENERATED ALWAYS AS ({expr}) STORED")
                 conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_fts ON {table} USING gin({col})")
-        # Items indexes
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_task_status ON items(task_id, status) WHERE deleted_at IS NULL")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_task_assignee ON items(task_id, assignee_id) WHERE deleted_at IS NULL")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_task_created ON items(task_id, created_at DESC) WHERE deleted_at IS NULL")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_task_priority ON items(task_id, priority) WHERE deleted_at IS NULL")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_labels ON items USING gin(labels) WHERE deleted_at IS NULL")
         conn.commit()
     finally:
         conn.close()
@@ -267,6 +277,7 @@ def _ensure_postgres_migrations(conn) -> None:
     ).fetchone()
     if not row:
         conn.execute("ALTER TABLE tasks ADD COLUMN item_seq INTEGER NOT NULL DEFAULT 0")
+    # Add assigned_at to items and backfill
     row = conn.execute(
         "SELECT 1 FROM information_schema.columns"
         " WHERE table_name = 'items' AND column_name = 'assigned_at'"
@@ -289,6 +300,50 @@ def _ensure_postgres_migrations(conn) -> None:
         conn.execute("ALTER TABLE agents ADD COLUMN user_id INTEGER REFERENCES users(id)")
         # Backfill: set token = id for existing agents
         conn.execute("UPDATE agents SET token = id WHERE token IS NULL")
+    # GitHub OAuth columns on users
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'users' AND column_name = 'github_id'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE users ADD COLUMN github_id BIGINT UNIQUE")
+        conn.execute("ALTER TABLE users ADD COLUMN github_username TEXT")
+        conn.execute("ALTER TABLE users ADD COLUMN github_token TEXT")
+        conn.execute("ALTER TABLE users ADD COLUMN github_connected_at TIMESTAMPTZ")
+        conn.execute("ALTER TABLE users ALTER COLUMN password DROP NOT NULL")
+    # Private task columns on tasks
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'tasks' AND column_name = 'task_type'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'public'")
+        conn.execute("ALTER TABLE tasks ADD COLUMN owner_id INTEGER REFERENCES users(id)")
+        conn.execute("ALTER TABLE tasks ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'")
+        conn.execute("ALTER TABLE tasks ADD COLUMN source_repo TEXT")
+    # Avatar URL column on users
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'users' AND column_name = 'avatar_url'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT")
+    # User UUID column (stable identifier, never changes)
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'users' AND column_name = 'uuid'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE users ADD COLUMN uuid TEXT UNIQUE")
+        conn.execute("UPDATE users SET uuid = gen_random_uuid()::text WHERE uuid IS NULL")
+    # GitHub refresh token columns
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'users' AND column_name = 'github_refresh_token'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE users ADD COLUMN github_refresh_token TEXT")
+        conn.execute("ALTER TABLE users ADD COLUMN github_token_expires TIMESTAMPTZ")
 
 
 # --- Async connection pool (one per worker process) ---
@@ -296,9 +351,13 @@ def _ensure_postgres_migrations(conn) -> None:
 _pool: AsyncConnectionPool | None = None
 
 
-async def init_pool(min_size: int = 2, max_size: int = 5) -> None:
+async def init_pool(min_size: int = 0, max_size: int = 0) -> None:
     """Create the per-worker connection pool. Call from lifespan (post-fork)."""
     global _pool
+    if not min_size:
+        min_size = int(os.environ.get("DB_POOL_MIN", "2"))
+    if not max_size:
+        max_size = int(os.environ.get("DB_POOL_MAX", "10"))
     _pool = AsyncConnectionPool(
         DATABASE_URL,
         kwargs={"row_factory": dict_row},
