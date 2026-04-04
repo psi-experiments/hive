@@ -138,6 +138,18 @@ _PG_SCHEMA = [
         expires_at      TIMESTAMPTZ NOT NULL,
         created_at      TIMESTAMPTZ NOT NULL
     )""",
+    """CREATE TABLE IF NOT EXISTS oauth_states (
+        token           TEXT PRIMARY KEY,
+        mode            TEXT NOT NULL,
+        expires_at      TIMESTAMPTZ NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS password_resets (
+        email           TEXT PRIMARY KEY,
+        code            TEXT NOT NULL,
+        expires_at      TIMESTAMPTZ NOT NULL,
+        attempts        INTEGER NOT NULL DEFAULT 0,
+        created_at      TIMESTAMPTZ NOT NULL
+    )""",
 ]
 
 
@@ -300,6 +312,20 @@ def _ensure_postgres_migrations(conn) -> None:
         conn.execute("ALTER TABLE agents ADD COLUMN user_id INTEGER REFERENCES users(id)")
         # Backfill: set token = id for existing agents
         conn.execute("UPDATE agents SET token = id WHERE token IS NULL")
+    # Link runs, posts, comments, skills to kanban items
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'runs' AND column_name = 'item_id'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE runs ADD COLUMN item_id TEXT REFERENCES items(id)")
+        conn.execute("ALTER TABLE posts ADD COLUMN item_id TEXT REFERENCES items(id)")
+        conn.execute("ALTER TABLE comments ADD COLUMN item_id TEXT REFERENCES items(id)")
+        conn.execute("ALTER TABLE skills ADD COLUMN item_id TEXT REFERENCES items(id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_item ON runs(item_id) WHERE item_id IS NOT NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_item ON posts(item_id) WHERE item_id IS NOT NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_item ON comments(item_id) WHERE item_id IS NOT NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_item ON skills(item_id) WHERE item_id IS NOT NULL")
     # GitHub OAuth columns on users
     row = conn.execute(
         "SELECT 1 FROM information_schema.columns"
