@@ -610,7 +610,7 @@ async def auth_config():
         result["github_app_install_url"] = f"https://github.com/apps/{GITHUB_USER_APP_SLUG}/installations/new"
     github_app_slug = os.environ.get("GITHUB_APP_SLUG", "")
     if github_app_slug:
-        result["github_agent_app_install_url"] = f"https://github.com/apps/{github_app_slug}/installations/new"
+        result["github_agent_app_install_url"] = f"https://github.com/apps/{github_app_slug}/installations/select_target"
     return result
 
 
@@ -753,51 +753,29 @@ async def auth_github_disconnect(user: dict = Depends(require_user)):
 @router.get("/auth/github/repos")
 async def auth_github_repos(user: dict = Depends(require_user), page: int = 1, per_page: int = 30):
     user_id = int(user["sub"])
-    gh = get_github_app()
-
-    # Get the user's GitHub username to filter installations
-    async with get_db() as conn:
-        user_row = await (await conn.execute(
-            "SELECT github_username FROM users WHERE id = %s", (user_id,)
-        )).fetchone()
-    github_username = user_row["github_username"] if user_row else None
-    if not github_username:
-        return {"repos": [], "installed": False, "page": page}
-
+    gh_token = await _get_valid_github_token(user_id)
     def _fetch():
-        # List all installations of the GitHub App, find the user's
-        jwt_token = gh._jwt()
-        headers = {"Authorization": f"Bearer {jwt_token}", "Accept": "application/vnd.github+json"}
-        inst_resp = httpx.get("https://api.github.com/app/installations", headers=headers, timeout=15)
-        if inst_resp.status_code != 200:
-            return {"repos": [], "installed": False}
-        installations = inst_resp.json()
-        # Find installation for this user's account
-        user_inst = None
-        for inst in installations:
-            account = inst.get("account", {})
-            if account.get("login", "").lower() == github_username.lower():
-                user_inst = inst
-                break
-        if not user_inst:
-            return {"repos": [], "installed": False}
-        # Use installation token to list repos
-        inst_id = str(user_inst["id"])
-        token = gh.get_token_for_installation(inst_id)
-        repo_headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-        r = httpx.get(
-            "https://api.github.com/installation/repositories",
-            params={"per_page": min(per_page, 100), "page": page},
-            headers=repo_headers, timeout=15,
-        )
-        if r.status_code != 200:
-            return {"repos": [], "installed": True}
-        repos = []
-        for repo in r.json().get("repositories", []):
-            repos.append({"full_name": repo["full_name"], "name": repo["name"], "private": repo["private"],
-                          "description": repo.get("description"), "url": repo["html_url"],
-                          "default_branch": repo["default_branch"], "updated_at": repo["updated_at"]})
-        return {"repos": repos, "installed": True}
+        headers = _gh_user_headers(gh_token)
+        # Try installation-scoped repos (GitHub App)
+        inst_resp = httpx.get("https://api.github.com/user/installations", headers=headers, timeout=15)
+        if inst_resp.status_code == 200:
+            installations = inst_resp.json().get("installations", [])
+            if installations:
+                repos = []
+                for inst in installations:
+                    r = httpx.get(
+                        f"https://api.github.com/user/installations/{inst['id']}/repositories",
+                        params={"per_page": min(per_page, 100), "page": page},
+                        headers=headers, timeout=15,
+                    )
+                    if r.status_code == 200:
+                        for repo in r.json().get("repositories", []):
+                            repos.append({"full_name": repo["full_name"], "name": repo["name"], "private": repo["private"],
+                                          "description": repo.get("description"), "url": repo["html_url"],
+                                          "default_branch": repo["default_branch"], "updated_at": repo["updated_at"]})
+                return {"repos": repos, "installed": True}
+        # App not installed — return empty with install flag
+        return {"repos": [], "installed": False}
     result = await asyncio.to_thread(_fetch)
     return {"repos": result["repos"], "installed": result["installed"], "page": page}
 
