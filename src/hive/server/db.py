@@ -1,6 +1,7 @@
 import os
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -55,6 +56,16 @@ _PG_SCHEMA = [
         message         TEXT NOT NULL,
         score           DOUBLE PRECISION,
         verified        BOOLEAN DEFAULT FALSE,
+        valid           BOOLEAN DEFAULT TRUE,
+        verification_status TEXT DEFAULT 'none',
+        verified_score  DOUBLE PRECISION,
+        task_repo_sha   TEXT,
+        verification_config TEXT,
+        verified_metric_key TEXT,
+        verified_metric_value DOUBLE PRECISION,
+        verification_log TEXT,
+        verified_at     TIMESTAMPTZ,
+        verification_started_at TIMESTAMPTZ,
         created_at      TIMESTAMPTZ NOT NULL,
         fork_id         INTEGER REFERENCES forks(id)
     )""",
@@ -176,6 +187,13 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_items_task_created ON items(task_id, created_at DESC) WHERE deleted_at IS NULL")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_items_task_priority ON items(task_id, priority) WHERE deleted_at IS NULL")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_items_labels ON items USING gin(labels) WHERE deleted_at IS NULL")
+        # The verifier worker scans pending/running jobs by status, so keep those lookups narrow.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_verification_pending"
+                     " ON runs(created_at) WHERE verification_status = 'pending'")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_verification_running"
+                     " ON runs(verification_started_at) WHERE verification_status = 'running'")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_task_verified_score"
+                     " ON runs(task_id, verified_score DESC) WHERE verified_score IS NOT NULL")
         # Full-text search: add tsvector columns + GIN indexes
         _fts_cols = [
             ("tasks", "search_vec", "to_tsvector('english', coalesce(name,'') || ' ' || coalesce(description,''))"),
@@ -198,7 +216,9 @@ def init_db() -> None:
         conn.close()
 
 
-def _ensure_postgres_migrations(conn) -> None:
+def _ensure_postgres_migrations(conn: psycopg.Connection[Any]) -> None:
+    """Apply additive schema migrations needed by newer server versions."""
+
     row = conn.execute(
         "SELECT 1 FROM information_schema.columns"
         " WHERE table_name = 'comments' AND column_name = 'parent_comment_id'"
@@ -412,6 +432,25 @@ def _ensure_postgres_migrations(conn) -> None:
     ).fetchone()
     if not row:
         conn.execute("ALTER TABLE forks ADD COLUMN branch_prefix TEXT")
+
+    # Verification state is stored directly on runs so the worker can resume and re-queue jobs.
+    for col, typedef in [
+        ("verification_status", "TEXT DEFAULT 'none'"),
+        ("verified_score", "DOUBLE PRECISION"),
+        ("task_repo_sha", "TEXT"),
+        ("verification_config", "TEXT"),
+        ("verified_metric_key", "TEXT"),
+        ("verified_metric_value", "DOUBLE PRECISION"),
+        ("verification_log", "TEXT"),
+        ("verified_at", "TIMESTAMPTZ"),
+        ("verification_started_at", "TIMESTAMPTZ"),
+    ]:
+        row = conn.execute(
+            "SELECT 1 FROM information_schema.columns"
+            " WHERE table_name = 'runs' AND column_name = %s", (col,)
+        ).fetchone()
+        if not row:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {typedef}")
 
 
 # --- Async connection pool (one per worker process) ---
