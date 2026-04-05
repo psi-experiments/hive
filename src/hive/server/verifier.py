@@ -53,7 +53,7 @@ SANDBOX_TIMEOUT = int(os.environ.get("VERIFY_SANDBOX_TIMEOUT", "120"))
 VOLUME_TIMEOUT = int(os.environ.get("VERIFY_VOLUME_TIMEOUT", "120"))
 AUTO_ARCHIVE_INTERVAL = int(os.environ.get("VERIFY_AUTO_ARCHIVE_INTERVAL", "60"))
 AUTO_DELETE_INTERVAL = int(os.environ.get("VERIFY_AUTO_DELETE_INTERVAL", "120"))
-MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("VERIFY_MAX_CONCURRENT_JOBS", "1")))
+MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("VERIFY_MAX_CONCURRENT_JOBS", "3")))
 DB_POOL_MIN = int(os.environ.get("VERIFY_DB_POOL_MIN", "1"))
 DB_POOL_MAX = int(os.environ.get("VERIFY_DB_POOL_MAX", "0"))  # 0 = auto-size
 SANDBOX_MAX_RETRIES = int(os.environ.get("VERIFY_SANDBOX_MAX_RETRIES", "3"))
@@ -203,7 +203,16 @@ async def verify_run(daytona: AsyncDaytona, job: VerificationJob) -> None:
 
         # Clone the trusted task repo, then overlay only the agent-owned paths before running scripts.
         await sandbox.git.clone(url=job.repo_url, path=TASK_DIR, commit_id=job.task_repo_sha)
-        await sandbox.git.clone(url=job.fork_url, path=AGENT_DIR, commit_id=job.id)
+        # Clone agent fork: fetch all refs so non-default-branch commits are available.
+        await sandbox.git.clone(url=job.fork_url, path=AGENT_DIR)
+        await _run_checked(
+            sandbox,
+            f"git fetch origin '+refs/heads/*:refs/remotes/origin/*' && git checkout {shlex.quote(job.id)}",
+            logs,
+            cwd=AGENT_DIR,
+            timeout=job.config.prepare_timeout,
+            section="checkout agent commit",
+        )
 
         for rel_path in job.config.mutable_paths:
             await _run_checked(
@@ -217,6 +226,18 @@ async def verify_run(daytona: AsyncDaytona, job: VerificationJob) -> None:
 
         await _materialize_path_links(sandbox, job.config, logs)
         await _write_env_file_if_needed(sandbox, job.config, logs)
+
+        # Run optional sandbox setup commands (e.g. install runtime dependencies).
+        setup_cmds = job.config.sandbox.env and dict(job.config.sandbox.env).get("HIVE_SETUP_CMD")
+        if setup_cmds:
+            await _run_checked(
+                sandbox,
+                setup_cmds,
+                logs,
+                cwd=TASK_DIR,
+                timeout=job.config.eval_timeout,
+                section="sandbox setup",
+            )
 
         if await _path_exists(sandbox, f"{TASK_DIR}/prepare.sh"):
             await _run_checked(
