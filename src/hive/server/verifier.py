@@ -12,12 +12,16 @@ import logging
 import os
 import re
 import shlex
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
 try:
-    _daytona = importlib.import_module("daytona")
+    try:
+        _daytona = importlib.import_module("daytona_sdk")
+    except ImportError:
+        _daytona = importlib.import_module("daytona")
 except ImportError:  # pragma: no cover - exercised only when Daytona is unavailable.
     AsyncDaytona = Any  # type: ignore[assignment]
     CreateSandboxFromSnapshotParams = None  # type: ignore[assignment]
@@ -49,6 +53,9 @@ SANDBOX_TIMEOUT = int(os.environ.get("VERIFY_SANDBOX_TIMEOUT", "120"))
 VOLUME_TIMEOUT = int(os.environ.get("VERIFY_VOLUME_TIMEOUT", "120"))
 AUTO_ARCHIVE_INTERVAL = int(os.environ.get("VERIFY_AUTO_ARCHIVE_INTERVAL", "60"))
 AUTO_DELETE_INTERVAL = int(os.environ.get("VERIFY_AUTO_DELETE_INTERVAL", "120"))
+MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("VERIFY_MAX_CONCURRENT_JOBS", "1")))
+DB_POOL_MIN = int(os.environ.get("VERIFY_DB_POOL_MIN", "1"))
+DB_POOL_MAX = int(os.environ.get("VERIFY_DB_POOL_MAX", "0"))  # 0 = auto-size
 
 TASK_DIR = "/home/daytona/task"
 AGENT_DIR = "/home/daytona/agent"
@@ -492,34 +499,122 @@ def _parse_last_float(output: str) -> float | None:
     return None
 
 
+async def _run_one_job(worker_id: int) -> bool:
+    """Claim and verify one job.  Returns True if a job was processed."""
+
+    job = await claim_next_job()
+    if job is None:
+        return False
+
+    t0 = time.monotonic()
+    log.info("[w%d] verifying run %s (task=%s)", worker_id, job.id, job.task_id)
+
+    # Each job gets its own AsyncDaytona client to avoid shared-state issues
+    # under concurrency.  The SDK uses internal connection pools that are not
+    # documented as safe to share across concurrent coroutines.
+    try:
+        async with AsyncDaytona() as daytona:
+            await verify_run(daytona, job)
+    except Exception:
+        log.exception("[w%d] daytona client error for run %s", worker_id, job.id)
+        await record_result(job, STATUS_ERROR, None, None, "Daytona client error")
+
+    elapsed = time.monotonic() - t0
+    log.info("[w%d] finished run %s (%.1fs)", worker_id, job.id, elapsed)
+    return True
+
+
+async def _worker(worker_id: int, sem: asyncio.Semaphore) -> None:
+    """One worker coroutine: claim jobs until cancelled."""
+
+    while True:
+        async with sem:
+            processed = await _run_one_job(worker_id)
+        if not processed:
+            await asyncio.sleep(POLL_INTERVAL)
+
+
+async def _coordinator() -> None:
+    """Periodically reclaim stale jobs."""
+
+    while True:
+        try:
+            reclaimed = await requeue_stale_jobs()
+            if reclaimed:
+                log.warning("re-queued %d stale verification jobs", reclaimed)
+        except Exception:
+            log.exception("stale-job recovery failed")
+        await asyncio.sleep(POLL_INTERVAL * 6)
+
+
 async def poll_loop(daytona: AsyncDaytona) -> None:
-    """Continuously reclaim stale jobs and verify newly claimed runs."""
+    """Legacy single-worker loop (MAX_CONCURRENT_JOBS=1).
+
+    Kept for backward compatibility and readability.  The daytona client
+    passed in is reused across sequential jobs.
+    """
 
     while True:
         reclaimed = await requeue_stale_jobs()
         if reclaimed:
-            log.warning("Re-queued %d stale verification jobs", reclaimed)
+            log.warning("re-queued %d stale verification jobs", reclaimed)
 
         job = await claim_next_job()
         if job is None:
             await asyncio.sleep(POLL_INTERVAL)
             continue
 
-        log.info("Verifying run %s (task=%s)", job.id, job.task_id)
+        t0 = time.monotonic()
+        log.info("verifying run %s (task=%s)", job.id, job.task_id)
         await verify_run(daytona, job)
-        log.info("Finished run %s", job.id)
+        log.info("finished run %s (%.1fs)", job.id, time.monotonic() - t0)
+
+
+def _effective_pool_max() -> int:
+    """Compute DB pool max based on concurrency config."""
+
+    if DB_POOL_MAX > 0:
+        return DB_POOL_MAX
+    # Each concurrent job may hold 1-2 connections (claim + record_result).
+    # Add a small buffer.
+    return max(4, MAX_CONCURRENT_JOBS * 2 + 2)
 
 
 async def main() -> None:
     """Entry point for the standalone verification worker."""
 
+    pool_max = _effective_pool_max()
+    pool_min = min(DB_POOL_MIN, pool_max)
     init_db()
-    await init_pool(min_size=1, max_size=2)
+    await init_pool(min_size=pool_min, max_size=pool_max)
 
-    log.info("Verification worker started, polling every %ds", POLL_INTERVAL)
+    log.info(
+        "verification worker started: concurrency=%d, poll=%ds, db_pool=%d-%d",
+        MAX_CONCURRENT_JOBS, POLL_INTERVAL, pool_min, pool_max,
+    )
+
     try:
-        async with AsyncDaytona() as daytona:
-            await poll_loop(daytona)
+        if MAX_CONCURRENT_JOBS <= 1:
+            # Single-worker fast path: share one Daytona client, no overhead.
+            async with AsyncDaytona() as daytona:
+                await poll_loop(daytona)
+        else:
+            # Concurrent workers: each job creates its own Daytona client.
+            sem = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+            workers = [
+                asyncio.create_task(_worker(i, sem), name=f"verifier-w{i}")
+                for i in range(MAX_CONCURRENT_JOBS)
+            ]
+            coordinator = asyncio.create_task(_coordinator(), name="verifier-coordinator")
+            # Wait until any task raises (should run forever).
+            done, pending = await asyncio.wait(
+                [*workers, coordinator], return_when=asyncio.FIRST_EXCEPTION,
+            )
+            for task in done:
+                if task.exception():
+                    log.error("worker crashed: %s", task.exception())
+            for task in pending:
+                task.cancel()
     finally:
         await close_pool()
 

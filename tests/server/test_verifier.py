@@ -6,7 +6,14 @@ import pytest
 
 from hive.server.db import get_db_sync, now
 from hive.server.verification import DEFAULT_STALE_AFTER
-from hive.server.verifier import claim_next_job, parse_score, requeue_stale_jobs, verify_run
+from hive.server.verifier import (
+    _effective_pool_max,
+    _run_one_job,
+    claim_next_job,
+    parse_score,
+    requeue_stale_jobs,
+    verify_run,
+)
 
 
 def _insert_task(task_id="tv1", config=None):
@@ -761,3 +768,105 @@ class TestVerifierWorker:
         assert stale["verification_started_at"] is None
         assert fresh["verification_status"] == "running"
         assert fresh["verification_started_at"] is not None
+
+
+class TestConcurrency:
+    """Tests for the concurrency scheduler and pool sizing."""
+
+    def test_effective_pool_max_default(self, monkeypatch):
+        monkeypatch.setattr("hive.server.verifier.MAX_CONCURRENT_JOBS", 1)
+        monkeypatch.setattr("hive.server.verifier.DB_POOL_MAX", 0)
+        assert _effective_pool_max() == 4  # max(4, 1*2+2)
+
+    def test_effective_pool_max_scales_with_concurrency(self, monkeypatch):
+        monkeypatch.setattr("hive.server.verifier.MAX_CONCURRENT_JOBS", 5)
+        monkeypatch.setattr("hive.server.verifier.DB_POOL_MAX", 0)
+        assert _effective_pool_max() == 12  # max(4, 5*2+2)
+
+    def test_effective_pool_max_explicit_override(self, monkeypatch):
+        monkeypatch.setattr("hive.server.verifier.MAX_CONCURRENT_JOBS", 5)
+        monkeypatch.setattr("hive.server.verifier.DB_POOL_MAX", 20)
+        assert _effective_pool_max() == 20
+
+    def test_run_one_job_returns_false_when_no_jobs(self, client):
+        """No pending jobs → returns False, no crash."""
+        result = asyncio.run(_run_one_job(0))
+        assert result is False
+
+    def test_run_one_job_processes_and_returns_true(self, registered_agent, mock_github, monkeypatch):
+        client, _, token = registered_agent
+        _insert_verifiable_task("tv-concurrent")
+        client.post("/api/tasks/tv-concurrent/clone", params={"token": token})
+        client.post(
+            "/api/tasks/tv-concurrent/submit",
+            params={"token": token},
+            json={"sha": "conc123", "branch": "main", "message": "m", "tldr": "t"},
+        )
+
+        class FakeAsyncDaytona:
+            def __init__(self):
+                self.sandbox = FakeSandbox(FakeExecResult(0, "accuracy: 0.88"))
+            async def __aenter__(self):
+                return FakeDaytona(self.sandbox)
+            async def __aexit__(self, *a):
+                pass
+
+        monkeypatch.setattr("hive.server.verifier.AsyncDaytona", FakeAsyncDaytona)
+        result = asyncio.run(_run_one_job(0))
+        assert result is True
+
+        run = _load_run("conc123")
+        assert run["verification_status"] == "success"
+        assert run["verified_score"] == 0.88
+
+    def test_run_one_job_handles_daytona_crash(self, registered_agent, mock_github, monkeypatch):
+        client, _, token = registered_agent
+        _insert_verifiable_task("tv-daytona-crash")
+        client.post("/api/tasks/tv-daytona-crash/clone", params={"token": token})
+        client.post(
+            "/api/tasks/tv-daytona-crash/submit",
+            params={"token": token},
+            json={"sha": "crash123", "branch": "main", "message": "m", "tldr": "t"},
+        )
+
+        class BrokenDaytona:
+            async def __aenter__(self):
+                raise RuntimeError("daytona down")
+            async def __aexit__(self, *a):
+                pass
+
+        monkeypatch.setattr("hive.server.verifier.AsyncDaytona", BrokenDaytona)
+        result = asyncio.run(_run_one_job(0))
+        assert result is True  # job was claimed and processed (as error)
+
+        run = _load_run("crash123")
+        assert run["verification_status"] == "error"
+        assert "Daytona client error" in run["verification_log"]
+
+    def test_concurrent_claims_are_independent(self, client):
+        """Two concurrent claim_next_job calls get different jobs."""
+        with get_db_sync() as conn:
+            conn.execute(
+                "INSERT INTO agents (id, registered_at, last_seen_at, total_runs) VALUES (%s, %s, %s, 0)",
+                ("agent-conc", now(), now()),
+            )
+            conn.execute(
+                "INSERT INTO tasks (id, name, description, repo_url, config, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+                ("tv-conc", "T", "T", "https://github.com/t/t",
+                 json.dumps({"verify": True, "mutable_paths": ["a"]}), now()),
+            )
+            for sha in ["conc-a", "conc-b"]:
+                conn.execute(
+                    "INSERT INTO runs (id, task_id, agent_id, branch, tldr, message, score,"
+                    " verification_status, verification_config, task_repo_sha, created_at)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (sha, "tv-conc", "agent-conc", "main", "t", "m", 1.0,
+                     "pending", json.dumps({"verify": True, "mutable_paths": ["a"]}),
+                     "sha1", now()),
+                )
+
+        job1 = asyncio.run(claim_next_job())
+        job2 = asyncio.run(claim_next_job())
+        assert job1 is not None
+        assert job2 is not None
+        assert job1.id != job2.id

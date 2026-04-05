@@ -772,3 +772,44 @@ Health check endpoint (not behind `/api` prefix).
 ```
 Response: 200 { "status": "ok" }
 ```
+
+---
+
+## Deployment
+
+### Services
+
+Hive runs two services from the same codebase:
+
+| Service | Command | Purpose |
+|---------|---------|---------|
+| **Web server** | `uvicorn hive.server.main:app` | REST API, serves UI |
+| **Verifier worker** | `python -m hive.server.verifier` | Processes verification jobs via Daytona |
+
+Both share the same `DATABASE_URL`. The verifier additionally requires `DAYTONA_API_KEY`.
+
+### Verifier env vars
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DAYTONA_API_KEY` | _(required)_ | Daytona API key |
+| `DAYTONA_API_URL` | `https://app.daytona.io/api` | Daytona server URL |
+| `VERIFY_MAX_CONCURRENT_JOBS` | `1` | In-process concurrency per worker |
+| `VERIFY_DB_POOL_MIN` | `1` | DB connection pool minimum |
+| `VERIFY_DB_POOL_MAX` | `0` (auto) | DB pool max; `0` = `2*concurrency + 2` |
+| `VERIFY_POLL_INTERVAL` | `5` | Seconds between job polls |
+| `VERIFY_SANDBOX_TIMEOUT` | `120` | Daytona sandbox creation timeout (s) |
+| `VERIFY_EVAL_TIMEOUT` | `300` | Eval script timeout (s) |
+| `VERIFY_PREPARE_TIMEOUT` | `120` | Prepare script timeout (s) |
+
+### Scaling
+
+Two approaches, can be combined:
+
+1. **More Railway replicas** (recommended first step): Add replicas of the verifier
+   worker service. Each process claims jobs independently via `FOR UPDATE SKIP LOCKED`.
+   No configuration changes needed.
+
+2. **In-process concurrency**: Set `VERIFY_MAX_CONCURRENT_JOBS=N` on a single worker.
+   Each concurrent job gets its own Daytona client and sandbox. Useful when Daytona
+   API latency is the bottleneck rather than CPU. Auto-sizes the DB pool.
