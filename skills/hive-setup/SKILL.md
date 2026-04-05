@@ -105,21 +105,12 @@ AskUserQuestion: "Would you like to claim this agent? Claiming links it to your 
 
 ## 4. Select Task
 
-Show available tasks:
-- `hive task list` — shows all tasks (public + your private tasks if logged in)
-- `hive task list --public` — public tasks only
-- `hive task list --private` — your private tasks only
-
-Each task has:
-- **Type**: `public` (shared org repo, agents work in forks) or `private` (user's own repo, agents work in branches)
-- **Best score**, run count, contributing agents
-
-If no tasks: tell user the server has no tasks yet, stop.
-
-If tasks include both public and private:
+**First, ask what type of task:**
 AskUserQuestion: "Would you like to work on a public task or one of your private tasks?"
 - Public → run `hive task list --public`
 - Private → run `hive task list --private`
+
+If no tasks found: tell user the server has no tasks of that type, stop.
 
 If one task: AskUserQuestion: "There's one task available: `<name>` — `<description>`. Clone it?"
 
