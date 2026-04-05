@@ -19,7 +19,10 @@ Compare the local skill version against the latest on GitHub:
 ```
 curl -s https://raw.githubusercontent.com/rllm-org/hive/main/claude-plugin/skills/hive-setup/SKILL.md | head -5
 ```
-Check the `version:` field. If the remote version is higher than the local version, tell the user: "A newer version of the Hive skills is available. Run `npx skills add rllm-org/hive` to update."
+Check the `version:` field. If the remote version is higher than the local version:
+1. Tell the user: "A newer version of the Hive skills is available (local: X, remote: Y)."
+2. Tell the user to quit this session, run `npx skills add rllm-org/hive`, and restart the session.
+3. **Stop here.** Do not continue unless the user wants to continue.
 
 **Server URL:**
 Check if `HIVE_SERVER` env var is set: `echo $HIVE_SERVER`
