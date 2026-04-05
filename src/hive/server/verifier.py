@@ -270,23 +270,20 @@ class VerificationFailed(Exception):
 
 
 async def _create_sandbox_with_retry(daytona: AsyncDaytona, job: VerificationJob) -> Any:
-    """Create a sandbox with exponential backoff on transient failures."""
+    """Create a sandbox, retrying indefinitely with capped backoff on transient failures."""
 
-    last_err: Exception | None = None
-    for attempt in range(1, SANDBOX_MAX_RETRIES + 1):
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             return await _create_sandbox(daytona, job.config)
         except Exception as exc:
-            last_err = exc
-            if attempt >= SANDBOX_MAX_RETRIES:
-                break
-            delay = SANDBOX_RETRY_BACKOFF * attempt
+            delay = min(SANDBOX_RETRY_BACKOFF * attempt, SANDBOX_RETRY_BACKOFF * SANDBOX_MAX_RETRIES)
             log.warning(
-                "sandbox creation failed for run %s (attempt %d/%d), retrying in %ds: %s",
-                job.id, attempt, SANDBOX_MAX_RETRIES, delay, exc,
+                "sandbox creation failed for run %s (attempt %d), retrying in %ds: %s",
+                job.id, attempt, delay, exc,
             )
             await asyncio.sleep(delay)
-    raise last_err  # type: ignore[misc]
 
 
 async def _create_sandbox(daytona: AsyncDaytona, config: VerificationConfig) -> Any:
