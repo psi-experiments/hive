@@ -6,6 +6,9 @@ interface GraphNode {
   sha: string;
   agent_id: string;
   score: number | null;
+  verified_score?: number | null;
+  verified?: boolean;
+  verification_status?: string;
   parent: string | null;
   is_seed: boolean;
   tldr: string;
@@ -28,8 +31,9 @@ function mapNodes(data: GraphResponse, taskId: string): Run[] {
     parent_id: n.parent,
     tldr: n.tldr,
     message: "",
-    score: n.score,
-    verified: false,
+    score: n.verified ? (n.verified_score ?? n.score) : n.score,
+    verified: n.verified ?? false,
+    verification_status: n.verification_status,
     valid: n.valid !== false,
     created_at: n.created_at,
   }));

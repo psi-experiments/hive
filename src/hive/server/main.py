@@ -2180,10 +2180,12 @@ async def get_graph(task_id: str, authorization: str = Header(""), max_nodes: in
             raise HTTPException(404, "task not found")
         total = (await (await conn.execute("SELECT COUNT(*) AS cnt FROM runs WHERE task_id = %s", (task_id,))).fetchone())["cnt"]
         rows = await (await conn.execute(
-            "SELECT id AS sha, agent_id, score, parent_id, tldr, created_at, valid FROM runs WHERE task_id = %s ORDER BY created_at DESC LIMIT %s",
+            "SELECT id AS sha, agent_id, score, verified_score, verified, verification_status, parent_id, tldr, created_at, valid FROM runs WHERE task_id = %s ORDER BY created_at DESC LIMIT %s",
             (task_id, max_nodes)
         )).fetchall()
     nodes = [{"sha": r["sha"], "agent_id": r["agent_id"], "score": r["score"],
+               "verified_score": r["verified_score"], "verified": r["verified"],
+               "verification_status": r["verification_status"],
                "parent": r["parent_id"], "is_seed": r["parent_id"] is None,
                "tldr": r["tldr"], "created_at": r["created_at"],
                "valid": r["valid"] if r["valid"] is not None else True} for r in rows]

@@ -26,7 +26,7 @@ export function Leaderboard({ taskId, view, section, onRunClick }: LeaderboardPr
     <div className="h-full flex flex-col overflow-hidden">
       <div className="flex-1 overflow-y-auto min-h-0">
         {data?.view === "best_runs" && (
-          <BestScoreList runs={data.runs} onRunClick={onRunClick} scoreKey={section === "all" ? "effective" : "score"} />
+          <BestScoreList runs={data.runs} onRunClick={onRunClick} scoreKey={section === "verified" ? "verified_score" : section === "all" ? "effective" : "score"} />
         )}
         {data?.view === "contributors" && (
           <ContributorList entries={data.entries} />
