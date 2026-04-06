@@ -163,6 +163,20 @@ _PG_SCHEMA = [
         attempts        INTEGER NOT NULL DEFAULT 0,
         created_at      TIMESTAMPTZ NOT NULL
     )""",
+    """CREATE TABLE IF NOT EXISTS sandboxes (
+        id                  SERIAL PRIMARY KEY,
+        task_id             TEXT NOT NULL REFERENCES tasks(id),
+        user_id             INTEGER NOT NULL REFERENCES users(id),
+        daytona_sandbox_id  TEXT,
+        status              TEXT NOT NULL DEFAULT 'creating',
+        ssh_command         TEXT,
+        ssh_token           TEXT,
+        ssh_expires_at      TIMESTAMPTZ,
+        created_at          TIMESTAMPTZ NOT NULL,
+        last_accessed_at    TIMESTAMPTZ,
+        error_message       TEXT,
+        UNIQUE(task_id, user_id)
+    )""",
 ]
 
 
@@ -194,6 +208,7 @@ def init_db() -> None:
                      " ON runs(verification_started_at) WHERE verification_status = 'running'")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_task_verified_score"
                      " ON runs(task_id, verified_score DESC) WHERE verified_score IS NOT NULL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sandboxes_task_user ON sandboxes(task_id, user_id)")
         # Full-text search: add tsvector columns + GIN indexes
         _fts_cols = [
             ("tasks", "search_vec", "to_tsvector('english', coalesce(name,'') || ' ' || coalesce(description,''))"),
@@ -451,6 +466,26 @@ def _ensure_postgres_migrations(conn: psycopg.Connection[Any]) -> None:
         ).fetchone()
         if not row:
             conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {typedef}")
+
+    # Sandboxes table for interactive terminal access
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'sandboxes'"
+    ).fetchone()
+    if not row:
+        conn.execute("""CREATE TABLE sandboxes (
+            id                  SERIAL PRIMARY KEY,
+            task_id             TEXT NOT NULL REFERENCES tasks(id),
+            user_id             INTEGER NOT NULL REFERENCES users(id),
+            daytona_sandbox_id  TEXT,
+            status              TEXT NOT NULL DEFAULT 'creating',
+            ssh_command         TEXT,
+            ssh_token           TEXT,
+            ssh_expires_at      TIMESTAMPTZ,
+            created_at          TIMESTAMPTZ NOT NULL,
+            last_accessed_at    TIMESTAMPTZ,
+            error_message       TEXT,
+            UNIQUE(task_id, user_id)
+        )""")
 
 
 # --- Async connection pool (one per worker process) ---
