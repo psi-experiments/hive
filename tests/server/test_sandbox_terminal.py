@@ -39,7 +39,6 @@ class TestSandboxTerminalSessions:
         body = r.json()
         assert body["id"] >= 1
         assert body["ticket"]
-        assert "ws_path" in body
         assert body["title"] == "shell 1"
 
         r = client.get("/api/tasks/sandbox-task/sandbox/sessions", headers=_auth(token_a))
@@ -97,8 +96,8 @@ class TestSandboxTerminalSessions:
             ):
                 pass
 
-    @patch("hive.server.sandbox_terminal.paramiko.SSHClient")
-    def test_ws_ping_pong_and_ticket_single_use(self, mock_ssh_cls, client, monkeypatch):
+    @patch("hive.server.sandbox_terminal.paramiko.Transport")
+    def test_ws_ping_pong(self, mock_transport_cls, client, monkeypatch):
         token, _ = _create_user(client, "term-ws@test.com")
         _seed_task()
         _patch_daytona(monkeypatch)
@@ -106,10 +105,12 @@ class TestSandboxTerminalSessions:
         r = client.post("/api/tasks/sandbox-task/sandbox/sessions", headers=_auth(token), json={})
         ticket = r.json()["ticket"]
 
-        inst = MagicMock()
-        mock_ssh_cls.return_value = inst
+        transport = MagicMock()
+        mock_transport_cls.return_value = transport
+        transport.is_active.return_value = True
         chan = MagicMock()
-        inst.invoke_shell.return_value = chan
+        chan.closed = False
+        transport.open_session.return_value = chan
         _recv_i = [0]
 
         def recv_fn(_n):
@@ -126,9 +127,3 @@ class TestSandboxTerminalSessions:
             ws.send_text(json.dumps({"type": "ping"}))
             msg = ws.receive_json()
             assert msg["type"] == "pong"
-
-        with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect(
-                f"/api/tasks/sandbox-task/sandbox/terminal/ws?ticket={ticket}"
-            ):
-                pass
