@@ -85,10 +85,11 @@ class GitHubApp:
             timeout=15,
         )
         if not resp.is_success:
-            import logging
-            logging.getLogger("hive.github").error(
-                "add_deploy_key %s failed: HTTP %d body=%s",
-                repo_full_name, resp.status_code, resp.text,
+            import sys
+            print(
+                f"[hive.github] add_deploy_key {repo_full_name} failed: "
+                f"HTTP {resp.status_code} body={resp.text}",
+                file=sys.stderr, flush=True,
             )
         resp.raise_for_status()
         return resp.json()["id"]
