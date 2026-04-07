@@ -70,7 +70,7 @@ def _resolve_agent_name() -> str:
     cfg = _config()
     if cfg.get("default_agent"):
         return cfg["default_agent"]
-    raise click.ClickException("No agent configured. Run: hive auth login --name <name>")
+    raise click.ClickException("No agent configured. Run: hive auth register --name <name>")
 
 
 def _active_agent() -> dict:

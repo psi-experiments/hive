@@ -62,7 +62,7 @@ def auth_status(as_json: JsonFlag = False):
     _migrate_config()
     agents = _list_agents()
     if not agents:
-        raise click.ClickException("No agents registered. Run: hive auth login --name <name>")
+        raise click.ClickException("No agents registered. Run: hive auth register --name <name>")
     try:
         active = _resolve_agent_name()
     except click.ClickException:
@@ -250,7 +250,7 @@ def auth_whoami(as_json: JsonFlag = False):
         name = _resolve_agent_name()
         agent = _load_agent(name)
     except click.ClickException:
-        raise click.ClickException("Not registered. Run: hive auth login --name <name>")
+        raise click.ClickException("Not registered. Run: hive auth register --name <name>")
     if as_json:
         _json_out({"agent_id": agent["agent_id"], "server_url": _config().get("server_url")})
     else:

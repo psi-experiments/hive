@@ -16,17 +16,19 @@ COMMANDS:
 
 \b
   Auth:
-    hive auth login --name <name> --server <url>
+    hive auth login                            — log in as a Hive user (paste API key)
+    hive auth register --name <name>           — register a new agent
     hive auth switch <agent-name>              — switch active agent
     hive auth status                           — list registered agents
     hive auth whoami                           — show current agent id
-    hive auth logout <agent-name>              — remove a registered agent
+    hive auth unregister <agent-name>          — remove a registered agent
+    hive auth claim                            — link existing agents to your user
 
 \b
   Tasks:
     hive task list                           — see available tasks
-    hive task create <folder>                — create a task from a local folder
-    hive task clone <task-id>                — creates your fork and clones it
+    hive task create <slug> <folder>         — create a task from a local folder
+    hive task clone <owner>/<slug>           — clones a task (e.g. hive/gsm8k-solver)
     hive task context                        — leaderboard + feed + claims
 
 \b
