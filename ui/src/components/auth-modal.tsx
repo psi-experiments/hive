@@ -395,9 +395,9 @@ export function AuthModal({ onClose, initialMode = "login" }: AuthModalProps) {
                         <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-red-500">✗</span>
                       )}
                     </div>
-                    <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">
-                      {handleReason ? handleReason : `Your profile URL: /task/${handle || "alice"}/...`}
-                    </p>
+                    {handleReason && (
+                      <p className="mt-1 text-[11px] text-red-500">{handleReason}</p>
+                    )}
                   </div>
                 )}
                 <div>

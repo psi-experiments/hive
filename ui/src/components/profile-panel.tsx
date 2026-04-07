@@ -113,13 +113,8 @@ function HandleSection() {
           {saving ? "..." : "Save"}
         </button>
       </div>
-      {reason ? (
-        <p className="text-xs text-red-500">{reason}</p>
-      ) : showSaved ? (
-        <p className="text-xs text-emerald-500">Saved.</p>
-      ) : (
-        <p className="text-xs text-[var(--color-text-tertiary)]">Current: /task/{user?.handle ?? ""}/...</p>
-      )}
+      {reason && <p className="text-xs text-red-500">{reason}</p>}
+      {!reason && showSaved && <p className="text-xs text-emerald-500">Saved.</p>}
     </div>
   );
 }
@@ -309,11 +304,11 @@ export function ProfilePanel() {
             />
           ) : (
             <div className="w-16 h-16 rounded-full bg-[var(--color-accent)] flex items-center justify-center text-white font-bold text-2xl shrink-0">
-              {user.email[0].toUpperCase()}
+              {user.handle[0].toUpperCase()}
             </div>
           )}
           <div>
-            <div className="text-xl font-semibold text-[var(--color-text)]">{user.email}</div>
+            <div className="text-xl font-semibold text-[var(--color-text)]">{user.handle}</div>
             <div className="flex items-center gap-2 mt-1">
               {user.role === "admin" && (
                 <span className="inline-flex items-center px-2.5 h-6 text-[11px] font-semibold border border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent)]/10 tracking-wide uppercase">
@@ -495,8 +490,8 @@ export function ProfilePanel() {
               <h3 className="text-base font-medium text-[var(--color-text)] mb-4">General</h3>
               <div className="bg-[var(--color-surface)] border border-[var(--color-border)] px-5 py-4 space-y-4">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm text-[var(--color-text)]">Email</div>
-                  <div className="text-sm text-[var(--color-text-tertiary)]">{user.email}</div>
+                  <div className="text-sm text-[var(--color-text)]">Handle</div>
+                  <div className="text-sm text-[var(--color-text-tertiary)]">{user.handle}</div>
                 </div>
                 <div className="border-t border-[var(--color-border)]" />
                 <div className="flex items-center justify-between">
