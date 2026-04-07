@@ -146,13 +146,15 @@ def _check_password(password: str, hashed: str | None) -> bool:
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
-def _create_jwt(user_id: int, email: str, role: str) -> str:
+def _create_jwt(user_id: int, email: str, role: str, handle: str | None = None) -> str:
     payload = {
         "sub": str(user_id),
         "email": email,
         "role": role,
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS),
     }
+    if handle is not None:
+        payload["handle"] = handle
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -395,10 +397,14 @@ def _generate_code() -> str:
 async def auth_signup(body: dict[str, Any]):
     email = body.get("email", "").strip().lower()
     password = body.get("password", "")
+    handle = body.get("handle", "").strip().lower()
     if not email or "@" not in email:
         raise HTTPException(400, "valid email required")
     if len(password) < 8:
         raise HTTPException(400, "password must be at least 8 characters")
+    if not handle:
+        raise HTTPException(400, "handle required")
+    _validate_handle(handle)
     hashed = _hash_password(password)
     code = _generate_code()
     expires = now() + timedelta(minutes=10)
@@ -408,12 +414,25 @@ async def auth_signup(body: dict[str, Any]):
         )).fetchone()
         if existing:
             raise HTTPException(409, "email already registered")
+        # Reject if handle is taken by an existing user
+        existing_handle = await (await conn.execute(
+            "SELECT id FROM users WHERE handle = %s", (handle,)
+        )).fetchone()
+        if existing_handle:
+            raise HTTPException(409, "handle already taken")
+        # Reject if handle is locked by another in-flight signup (different email)
+        locked = await (await conn.execute(
+            "SELECT email FROM pending_signups WHERE handle = %s AND email != %s",
+            (handle, email),
+        )).fetchone()
+        if locked:
+            raise HTTPException(409, "handle already taken")
         # Upsert into pending_signups (allows re-signup if code expired)
         await conn.execute(
-            "INSERT INTO pending_signups (email, password, code, expires_at, created_at)"
-            " VALUES (%s, %s, %s, %s, %s)"
-            " ON CONFLICT (email) DO UPDATE SET password = %s, code = %s, expires_at = %s",
-            (email, hashed, code, expires, now(), hashed, code, expires),
+            "INSERT INTO pending_signups (email, password, handle, code, expires_at, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT (email) DO UPDATE SET password = %s, handle = %s, code = %s, expires_at = %s",
+            (email, hashed, handle, code, expires, now(), hashed, handle, code, expires),
         )
     try:
         await send_verification_code(email, code)
@@ -430,7 +449,7 @@ async def auth_verify_code(body: dict[str, Any]):
         raise HTTPException(400, "email and code required")
     async with get_db() as conn:
         row = await (await conn.execute(
-            "SELECT email, password, code, expires_at, attempts FROM pending_signups WHERE email = %s", (email,)
+            "SELECT email, password, handle, code, expires_at, attempts FROM pending_signups WHERE email = %s", (email,)
         )).fetchone()
     if not row:
         raise HTTPException(404, "no pending signup found — please sign up first")
@@ -444,17 +463,29 @@ async def auth_verify_code(body: dict[str, Any]):
         raise HTTPException(400, "invalid code")
     if row["expires_at"] < now():
         raise HTTPException(400, "code expired — please request a new one")
+    handle = row["handle"]
+    if not handle:
+        raise HTTPException(400, "signup is missing a handle — please sign up again")
     # Create the real user
     user_uuid = str(uuid.uuid4())
     async with get_db() as conn:
-        user_row = await (await conn.execute(
-            "INSERT INTO users (email, password, uuid, created_at)"
-            " VALUES (%s, %s, %s, %s) RETURNING id, role",
-            (row["email"], row["password"], user_uuid, now()),
+        # Race protection: re-check handle uniqueness right before insert
+        existing_handle = await (await conn.execute(
+            "SELECT id FROM users WHERE handle = %s", (handle,)
         )).fetchone()
+        if existing_handle:
+            raise HTTPException(409, "handle was claimed by another user — please sign up again with a different handle")
+        try:
+            user_row = await (await conn.execute(
+                "INSERT INTO users (email, password, handle, uuid, created_at)"
+                " VALUES (%s, %s, %s, %s, %s) RETURNING id, role",
+                (row["email"], row["password"], handle, user_uuid, now()),
+            )).fetchone()
+        except psycopg.errors.UniqueViolation:
+            raise HTTPException(409, "handle was claimed by another user — please sign up again with a different handle")
         await conn.execute("DELETE FROM pending_signups WHERE email = %s", (email,))
-    token = _create_jwt(user_row["id"], email, user_row["role"])
-    return {"token": token, "user": {"id": user_row["id"], "email": email, "role": user_row["role"]}}
+    token = _create_jwt(user_row["id"], email, user_row["role"], handle)
+    return {"token": token, "user": {"id": user_row["id"], "email": email, "handle": handle, "role": user_row["role"]}}
 
 
 @router.post("/auth/resend-code")
@@ -489,12 +520,12 @@ async def auth_login(body: dict[str, Any]):
         raise HTTPException(400, "email and password required")
     async with get_db() as conn:
         row = await (await conn.execute(
-            "SELECT id, email, password, role FROM users WHERE email = %s", (email,)
+            "SELECT id, email, password, role, handle FROM users WHERE email = %s", (email,)
         )).fetchone()
     if not row or not _check_password(password, row["password"]):
         raise HTTPException(401, "invalid email or password")
-    token = _create_jwt(row["id"], row["email"], row["role"])
-    return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"]}}
+    token = _create_jwt(row["id"], row["email"], row["role"], row["handle"])
+    return {"token": token, "user": {"id": row["id"], "email": row["email"], "handle": row["handle"], "role": row["role"]}}
 
 @router.post("/auth/forgot-password")
 async def auth_forgot_password(body: dict[str, Any]):
@@ -560,7 +591,7 @@ async def auth_me(user: dict = Depends(require_user)):
     user_id = int(user["sub"])
     async with get_db() as conn:
         row = await (await conn.execute(
-            "SELECT id, email, role, github_username, avatar_url, uuid, created_at FROM users WHERE id = %s", (user_id,)
+            "SELECT id, email, handle, role, github_username, avatar_url, uuid, created_at FROM users WHERE id = %s", (user_id,)
         )).fetchone()
         if not row:
             raise HTTPException(404, "user not found")
@@ -569,10 +600,58 @@ async def auth_me(user: dict = Depends(require_user)):
             (user_id,),
         )).fetchall()
     return {
-        "id": row["id"], "email": row["email"], "role": row["role"],
+        "id": row["id"], "email": row["email"], "handle": row["handle"], "role": row["role"],
         "github_username": row["github_username"], "avatar_url": row["avatar_url"], "uuid": row["uuid"], "created_at": row["created_at"],
         "agents": [{"id": a["id"], "registered_at": a["registered_at"], "last_seen_at": a["last_seen_at"], "total_runs": a["total_runs"]} for a in agents],
     }
+
+
+@router.get("/auth/handle-available")
+async def auth_handle_available(handle: str = Query(...)):
+    """Public endpoint for debounced handle uniqueness check during signup."""
+    handle = handle.strip().lower()
+    try:
+        _validate_handle(handle)
+    except HTTPException as e:
+        return {"available": False, "reason": e.detail}
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT 1 FROM users WHERE handle = %s"
+            " UNION ALL SELECT 1 FROM pending_signups WHERE handle = %s LIMIT 1",
+            (handle, handle),
+        )).fetchone()
+    return {"available": row is None}
+
+
+@router.patch("/auth/me")
+async def auth_update_me(body: dict[str, Any], user: dict = Depends(require_user)):
+    """Update editable user fields. Currently supports `handle`."""
+    user_id = int(user["sub"])
+    updates: dict[str, Any] = {}
+    if "handle" in body:
+        new_handle = (body.get("handle") or "").strip().lower()
+        _validate_handle(new_handle)
+        async with get_db() as conn:
+            existing = await (await conn.execute(
+                "SELECT id FROM users WHERE handle = %s AND id != %s", (new_handle, user_id)
+            )).fetchone()
+            if existing:
+                raise HTTPException(409, "handle already taken")
+            try:
+                await conn.execute(
+                    "UPDATE users SET handle = %s WHERE id = %s", (new_handle, user_id)
+                )
+            except psycopg.errors.UniqueViolation:
+                raise HTTPException(409, "handle already taken")
+            # Cascade: update tasks.owner for the user's private tasks so URLs follow
+            await conn.execute(
+                "UPDATE tasks SET owner = %s WHERE owner_id = %s AND visibility = 'private'",
+                (new_handle, user_id),
+            )
+        updates["handle"] = new_handle
+    if not updates:
+        raise HTTPException(400, "no updatable fields provided")
+    return updates
 
 
 @router.get("/auth/api-key")
@@ -699,36 +778,38 @@ async def auth_github(body: dict[str, Any]):
     async with get_db() as conn:
         # Check if user with this github_id already exists
         row = await (await conn.execute(
-            "SELECT id, email, role FROM users WHERE github_id = %s", (gh_id,)
+            "SELECT id, email, role, handle FROM users WHERE github_id = %s", (gh_id,)
         )).fetchone()
         if row:
             await conn.execute(
                 "UPDATE users SET github_token = %s, github_refresh_token = %s, github_token_expires = %s, github_username = %s, avatar_url = %s, github_connected_at = %s WHERE id = %s",
                 (gh_token_enc, gh_refresh_enc, gh_expires, gh_username, gh_avatar, now(), row["id"]),
             )
-            token = _create_jwt(row["id"], row["email"], row["role"])
-            return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "github_username": gh_username, "avatar_url": gh_avatar}}
+            token = _create_jwt(row["id"], row["email"], row["role"], row["handle"])
+            return {"token": token, "user": {"id": row["id"], "email": row["email"], "handle": row["handle"], "role": row["role"], "github_username": gh_username, "avatar_url": gh_avatar}}
         # Auto-link if email matches (all users in DB are verified)
         row = await (await conn.execute(
-            "SELECT id, email, role FROM users WHERE email = %s", (gh_email,)
+            "SELECT id, email, role, handle FROM users WHERE email = %s", (gh_email,)
         )).fetchone()
         if row:
             await conn.execute(
                 "UPDATE users SET github_id = %s, github_token = %s, github_refresh_token = %s, github_token_expires = %s, github_username = %s, avatar_url = %s, github_connected_at = %s WHERE id = %s",
                 (gh_id, gh_token_enc, gh_refresh_enc, gh_expires, gh_username, gh_avatar, now(), row["id"]),
             )
-            token = _create_jwt(row["id"], row["email"], row["role"])
-            return {"token": token, "user": {"id": row["id"], "email": row["email"], "role": row["role"], "github_username": gh_username, "avatar_url": gh_avatar}}
-        # Create new user (no password — GitHub-only, email verified via GitHub)
+            token = _create_jwt(row["id"], row["email"], row["role"], row["handle"])
+            return {"token": token, "user": {"id": row["id"], "email": row["email"], "handle": row["handle"], "role": row["role"], "github_username": gh_username, "avatar_url": gh_avatar}}
+        # Create new user — auto-derive handle from github_username, fallback to email prefix
+        base_handle = _sanitize_to_handle(gh_username or "") or _sanitize_to_handle(gh_email.split("@", 1)[0])
+        new_handle = await _generate_unique_handle(conn, base_handle)
         user_uuid = str(uuid.uuid4())
         row = await (await conn.execute(
-            "INSERT INTO users (email, github_id, github_username, github_token, github_refresh_token, github_token_expires, avatar_url, github_connected_at, uuid, created_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, role",
-            (gh_email, gh_id, gh_username, gh_token_enc, gh_refresh_enc, gh_expires, gh_avatar, now(), user_uuid, now()),
+            "INSERT INTO users (email, handle, github_id, github_username, github_token, github_refresh_token, github_token_expires, avatar_url, github_connected_at, uuid, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, role",
+            (gh_email, new_handle, gh_id, gh_username, gh_token_enc, gh_refresh_enc, gh_expires, gh_avatar, now(), user_uuid, now()),
         )).fetchone()
-    token = _create_jwt(row["id"], gh_email, row["role"])
+    token = _create_jwt(row["id"], gh_email, row["role"], new_handle)
     return JSONResponse(
-        {"token": token, "user": {"id": row["id"], "email": gh_email, "role": row["role"], "github_username": gh_username, "avatar_url": gh_avatar}},
+        {"token": token, "user": {"id": row["id"], "email": gh_email, "handle": new_handle, "role": row["role"], "github_username": gh_username, "avatar_url": gh_avatar}},
         status_code=201,
     )
 
@@ -893,6 +974,15 @@ _TASK_DESCRIPTION_MAX_LENGTH = 350
 
 PLATFORM_OWNER = os.environ.get("HIVE_PLATFORM_OWNER", "hive")
 
+# Reserved handles — keep in sync with db.py _RESERVED_HANDLES
+RESERVED_HANDLES = frozenset({
+    "hive",  # platform owner namespace
+    "admin", "api", "auth", "settings", "login", "signup",
+    "new", "explore", "trending",  # future-proofing
+})
+
+_HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,18}[a-z0-9]$")
+
 
 def _validate_slug(slug: str):
     if len(slug) < 2 or len(slug) > 20:
@@ -901,6 +991,53 @@ def _validate_slug(slug: str):
         raise HTTPException(400, "slug must contain only lowercase letters, digits, and hyphens, and start/end with a letter or digit")
     if "--" in slug:
         raise HTTPException(400, "slug must not contain consecutive hyphens (reserved as delimiter)")
+
+
+def _validate_handle(handle: str):
+    if not isinstance(handle, str):
+        raise HTTPException(400, "handle must be a string")
+    if len(handle) < 2 or len(handle) > 20:
+        raise HTTPException(400, "handle must be 2-20 characters")
+    if not _HANDLE_RE.match(handle):
+        raise HTTPException(400, "handle must contain only lowercase letters, digits, and hyphens, and start/end with a letter or digit")
+    if "--" in handle:
+        raise HTTPException(400, "handle must not contain consecutive hyphens")
+    if handle.lower() in RESERVED_HANDLES:
+        raise HTTPException(400, f"'{handle}' is reserved")
+
+
+def _sanitize_to_handle(text: str) -> str:
+    """Sanitize an arbitrary string (email prefix, github username) into a valid handle base.
+    Returns '' if the result is too short."""
+    out = re.sub(r"[^a-z0-9-]+", "-", text.lower())
+    out = re.sub(r"-+", "-", out).strip("-")
+    if len(out) < 2:
+        return ""
+    return out[:20].rstrip("-")
+
+
+async def _generate_unique_handle(conn: Any, base: str, fallback_id: int | None = None) -> str:
+    """Find a unique handle starting from `base`. Appends -2, -3, ... on collision.
+    Falls back to user-{id} if base is empty."""
+    if not base:
+        base = f"user-{fallback_id}" if fallback_id else "user"
+    candidate = base
+    i = 2
+    while True:
+        if candidate.lower() not in RESERVED_HANDLES:
+            row = await (await conn.execute(
+                "SELECT 1 FROM users WHERE handle = %s"
+                " UNION ALL SELECT 1 FROM pending_signups WHERE handle = %s",
+                (candidate, candidate)
+            )).fetchone()
+            if not row:
+                return candidate
+        suffix = f"-{i}"
+        trimmed = base[: max(2, 20 - len(suffix))].rstrip("-")
+        candidate = f"{trimmed}{suffix}"
+        i += 1
+        if i > 1000:  # safety
+            raise HTTPException(500, "could not generate unique handle")
 
 
 def _validate_task_description(description: str):
@@ -1021,8 +1158,8 @@ async def create_private_task(body: dict[str, Any], user: dict = Depends(require
     gh_token = await _get_valid_github_token(user_id)
     # Get user UUID for the owner field
     async with get_db() as conn:
-        user_row = await (await conn.execute("SELECT uuid FROM users WHERE id = %s", (user_id,))).fetchone()
-        task_owner = user_row["uuid"]
+        user_row = await (await conn.execute("SELECT handle FROM users WHERE id = %s", (user_id,))).fetchone()
+        task_owner = user_row["handle"]
     async with get_db() as conn:
         def _validate_repo():
             headers = _gh_user_headers(gh_token)

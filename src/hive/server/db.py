@@ -13,6 +13,7 @@ _PG_SCHEMA = [
     """CREATE TABLE IF NOT EXISTS users (
         id              SERIAL PRIMARY KEY,
         email           TEXT UNIQUE NOT NULL,
+        handle          TEXT UNIQUE NOT NULL,
         password        TEXT NOT NULL,
         role            TEXT NOT NULL DEFAULT 'user',
         created_at      TIMESTAMPTZ NOT NULL
@@ -149,6 +150,7 @@ _PG_SCHEMA = [
     """CREATE TABLE IF NOT EXISTS pending_signups (
         email           TEXT PRIMARY KEY,
         password        TEXT NOT NULL,
+        handle          TEXT NOT NULL DEFAULT '',
         code            TEXT NOT NULL,
         expires_at      TIMESTAMPTZ NOT NULL,
         attempts        INTEGER NOT NULL DEFAULT 0,
@@ -183,6 +185,7 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_task_upvotes ON skills(task_id, upvotes DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner_slug ON tasks(owner, slug)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_handle ON users(handle)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_visibility_owner ON tasks(visibility, owner_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_token ON agents(token)")
         # Items indexes
@@ -456,6 +459,25 @@ def _ensure_postgres_migrations(conn: psycopg.Connection[Any]) -> None:
         if not row:
             conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {typedef}")
 
+    # --- pending_signups.handle (lock handle during verification window) ---
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'pending_signups' AND column_name = 'handle'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE pending_signups ADD COLUMN handle TEXT NOT NULL DEFAULT ''")
+
+    # --- users.handle: backfill from email prefix, then enforce UNIQUE NOT NULL ---
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'users' AND column_name = 'handle'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE users ADD COLUMN handle TEXT")
+        _backfill_user_handles(conn)
+        conn.execute("CREATE UNIQUE INDEX users_handle_key ON users(handle)")
+        conn.execute("ALTER TABLE users ALTER COLUMN handle SET NOT NULL")
+
     # --- Task ID TEXT → SERIAL migration ---
     # Detect old schema: tasks.id is TEXT instead of integer
     row = conn.execute(
@@ -466,6 +488,47 @@ def _ensure_postgres_migrations(conn: psycopg.Connection[Any]) -> None:
         _migrate_task_id_to_serial(conn)
 
 
+# Reserved handles (kept in sync with main.py RESERVED_HANDLES — see _validate_handle)
+_RESERVED_HANDLES = frozenset({
+    "hive", "admin", "api", "auth", "settings", "login", "signup",
+    "new", "explore", "trending",
+})
+
+
+def _sanitize_email_to_handle(email: str) -> str:
+    """alice.smith+work@gmail.com -> 'alice-smith-work'. Returns '' if too short."""
+    import re as _re
+    local = email.split("@", 1)[0].lower()
+    out = _re.sub(r"[^a-z0-9-]+", "-", local)
+    out = _re.sub(r"-+", "-", out).strip("-")
+    if len(out) < 2:
+        return ""
+    return out[:20].rstrip("-")
+
+
+def _backfill_user_handles(conn: psycopg.Connection[Any]) -> None:
+    """Generate a handle for every user without one. Idempotent."""
+    rows = conn.execute(
+        "SELECT id, email FROM users WHERE handle IS NULL ORDER BY id"
+    ).fetchall()
+    taken: set[str] = set()
+    # Seed with any handles already present (in case of partial backfill)
+    existing = conn.execute("SELECT handle FROM users WHERE handle IS NOT NULL").fetchall()
+    for r in existing:
+        taken.add(r["handle"].lower())
+    for row in rows:
+        base = _sanitize_email_to_handle(row["email"]) or f"user-{row['id']}"
+        candidate = base
+        i = 2
+        while candidate.lower() in taken or candidate.lower() in _RESERVED_HANDLES:
+            suffix = f"-{i}"
+            trimmed = base[: max(2, 20 - len(suffix))].rstrip("-")
+            candidate = f"{trimmed}{suffix}"
+            i += 1
+        taken.add(candidate.lower())
+        conn.execute("UPDATE users SET handle = %s WHERE id = %s", (candidate, row["id"]))
+
+
 def _migrate_task_id_to_serial(conn: psycopg.Connection[Any]) -> None:
     """One-time migration: tasks.id TEXT PK → SERIAL PK with slug/owner columns."""
 
@@ -473,9 +536,9 @@ def _migrate_task_id_to_serial(conn: psycopg.Connection[Any]) -> None:
     conn.execute("ALTER TABLE tasks ADD COLUMN slug TEXT")
     conn.execute("ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'hive'")
     conn.execute("UPDATE tasks SET slug = id")
-    # Backfill owner for private tasks (user UUID from owner_id FK)
+    # Backfill owner for private tasks from users.handle (must run after _backfill_user_handles)
     conn.execute("""
-        UPDATE tasks SET owner = u.uuid
+        UPDATE tasks SET owner = u.handle
         FROM users u WHERE tasks.owner_id = u.id AND tasks.visibility = 'private'
     """)
     conn.execute("ALTER TABLE tasks ADD COLUMN new_id SERIAL")

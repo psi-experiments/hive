@@ -41,7 +41,7 @@ class TestParseSort:
 class TestAuth:
 
     def test_signup(self, client):
-        resp = client.post("/api/auth/signup", json={"email": "a@b.com", "password": "password123"})
+        resp = client.post("/api/auth/signup", json={"email": "a@b.com", "password": "password123", "handle": "alice"})
         assert resp.status_code == 201
         data = resp.json()
         assert data["status"] == "verification_required"
@@ -49,16 +49,16 @@ class TestAuth:
 
     def test_signup_duplicate_email(self, client):
         from tests.conftest import _create_verified_user
-        _create_verified_user(client, "dup@b.com", "password123")
-        resp = client.post("/api/auth/signup", json={"email": "dup@b.com", "password": "password456"})
+        _create_verified_user(client, "dup@b.com", "password123", handle="dupuser")
+        resp = client.post("/api/auth/signup", json={"email": "dup@b.com", "password": "password456", "handle": "anotheruser"})
         assert resp.status_code == 409
 
     def test_signup_short_password(self, client):
-        resp = client.post("/api/auth/signup", json={"email": "a@b.com", "password": "short"})
+        resp = client.post("/api/auth/signup", json={"email": "a@b.com", "password": "short", "handle": "alice"})
         assert resp.status_code == 400
 
     def test_signup_invalid_email(self, client):
-        resp = client.post("/api/auth/signup", json={"email": "notanemail", "password": "password123"})
+        resp = client.post("/api/auth/signup", json={"email": "notanemail", "password": "password123", "handle": "alice"})
         assert resp.status_code == 400
 
     def test_login(self, client):
