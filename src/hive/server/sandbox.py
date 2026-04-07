@@ -119,16 +119,14 @@ def _sandbox_response(row: dict, status_code: int = 200) -> JSONResponse:
 async def _bootstrap_sandbox(sandbox: Any, repo_url: str) -> None:
     """Install Claude Code, hive CLI, hive skills, and clone the task repo."""
     # Node + Claude Code
-    result = await sandbox.process.exec(
+    await sandbox.process.exec(
         "rm -rf /usr/local/share/nvm/versions/node/v25* 2>/dev/null;"
         " export NVM_DIR=/usr/local/share/nvm && . $NVM_DIR/nvm.sh 2>/dev/null;"
         " nvm install 22 && nvm alias default 22 && nvm use 22"
-        " && npm install -g @anthropic-ai/claude-code"
-        " && echo BOOTSTRAP_NODE=$(node --version) && echo BOOTSTRAP_CLAUDE=$(claude --version)",
+        " && npm install -g @anthropic-ai/claude-code",
         cwd="/home/daytona",
         timeout=SANDBOX_BOOTSTRAP_TIMEOUT,
     )
-    log.warning("Bootstrap node+claude result: %s", result)
     # hive CLI + Claude skills/commands
     await sandbox.process.exec(
         "pip install --break-system-packages hive-evolve"

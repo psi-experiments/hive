@@ -48,7 +48,6 @@ export interface SandboxSessionCreateResponse {
   title: string | null;
   ticket: string;
   ticket_expires_at: string;
-  ws_path: string;
 }
 
 export interface Run {

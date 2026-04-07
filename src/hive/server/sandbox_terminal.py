@@ -25,7 +25,7 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query, WebSocket, We
 from fastapi.responses import JSONResponse
 
 from .db import get_db, now
-from .sandbox import AsyncDaytona, _decrypt, _encrypt
+from .sandbox import AsyncDaytona, _encrypt
 
 log = logging.getLogger("hive.sandbox_terminal")
 
@@ -468,11 +468,7 @@ async def _validate_ticket_and_load(task_id: str, ticket: str) -> dict[str, Any]
                 sb_row["ssh_command"] = ssh.ssh_command
                 sb_row["ssh_token"] = _encrypt(ssh.token)
 
-        pwd = _decrypt(sb_row["ssh_token"])
-        if not pwd:
-            raise HTTPException(502, "missing ssh credentials")
         return {
             "session_id": row["session_id"],
             "ssh_command": sb_row["ssh_command"],
-            "ssh_password": pwd,
         }
