@@ -570,28 +570,33 @@ def _migrate_task_id_to_serial(conn: psycopg.Connection[Any]) -> None:
     ]:
         conn.execute(f"DROP INDEX IF EXISTS {idx}")
 
-    # 4. Swap columns
+    # 4. Drop old task_id columns from FK tables and rename new_task_id → task_id.
+    #    FK constraints are added back AFTER tasks gets its new PK, since
+    #    PostgreSQL requires the referenced column to have UNIQUE/PRIMARY KEY.
     for table in _fk_tables:
         conn.execute(f"ALTER TABLE {table} DROP COLUMN task_id")
         conn.execute(f"ALTER TABLE {table} RENAME COLUMN new_task_id TO task_id")
-        if table == "skills":
-            conn.execute(f"ALTER TABLE {table} ADD CONSTRAINT {table}_task_id_fkey"
-                         " FOREIGN KEY (task_id) REFERENCES tasks(new_id)")
-        else:
-            conn.execute(f"ALTER TABLE {table} ALTER COLUMN task_id SET NOT NULL")
-            conn.execute(f"ALTER TABLE {table} ADD CONSTRAINT {table}_task_id_fkey"
-                         " FOREIGN KEY (task_id) REFERENCES tasks(new_id)")
 
-    # 5. Swap PK on tasks
+    # 5. Swap PK on tasks (new_id becomes the new id and PK)
     conn.execute("ALTER TABLE tasks DROP CONSTRAINT tasks_pkey")
     conn.execute("ALTER TABLE tasks DROP COLUMN id")
     conn.execute("ALTER TABLE tasks RENAME COLUMN new_id TO id")
     conn.execute("ALTER TABLE tasks ADD PRIMARY KEY (id)")
 
-    # 6. Add owner+slug unique constraint
+    # 6. Add owner+slug unique constraint and enforce slug NOT NULL
+    conn.execute("ALTER TABLE tasks ALTER COLUMN slug SET NOT NULL")
     conn.execute("ALTER TABLE tasks ADD CONSTRAINT tasks_owner_slug_key UNIQUE (owner, slug)")
 
-    # 7. Restore composite constraints
+    # 7. Now that tasks(id) is the PK, add FK constraints back on FK tables.
+    for table in _fk_tables:
+        if table != "skills":
+            conn.execute(f"ALTER TABLE {table} ALTER COLUMN task_id SET NOT NULL")
+        conn.execute(
+            f"ALTER TABLE {table} ADD CONSTRAINT {table}_task_id_fkey"
+            " FOREIGN KEY (task_id) REFERENCES tasks(id)"
+        )
+
+    # 8. Restore composite constraints
     conn.execute("ALTER TABLE forks ADD CONSTRAINT forks_task_id_agent_id_key UNIQUE (task_id, agent_id)")
     conn.execute("ALTER TABLE items ADD CONSTRAINT items_task_id_seq_key UNIQUE (task_id, seq)")
 

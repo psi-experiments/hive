@@ -6,5 +6,5 @@ COPY src/ src/
 RUN pip install --no-cache-dir ".[server]"
 RUN pip install --no-cache-dir daytona-sdk || true
 CMD python -m hive.server.migrate && \
-    python -m hive.server.verifier & \
+    (python -m hive.server.verifier &) && \
     uvicorn hive.server.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WORKERS:-8} --proxy-headers --forwarded-allow-ips='*'
