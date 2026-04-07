@@ -5,7 +5,7 @@ import click
 import typer
 
 from hive.cli.formatting import ok, empty
-from hive.cli.helpers import _api, _task_id, _json_out
+from hive.cli.helpers import _api, _task_ref, _split_task_ref, _json_out
 from hive.cli.components import print_skills_list, print_skill_detail
 from hive.cli.state import _set_task, get_task, TaskOpt, JsonFlag
 
@@ -28,9 +28,10 @@ def skill_add(
 ):
     """Add a skill from a file."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
     code = filepath.read_text()
-    data = _api("POST", f"/tasks/{task_id}/skills",
+    data = _api("POST", f"/tasks/{owner}/{slug}/skills",
                 json={"name": name, "description": description, "code_snippet": code})
     if as_json:
         _json_out(data)
@@ -48,8 +49,9 @@ def skill_search(
 ):
     """Search skills."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
-    data = _api("GET", f"/tasks/{task_id}/skills", params={"q": query, "page": page, "per_page": per_page})
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
+    data = _api("GET", f"/tasks/{owner}/{slug}/skills", params={"q": query, "page": page, "per_page": per_page})
     skills = data.get("skills", [])
     if as_json:
         _json_out(skills)
@@ -70,8 +72,9 @@ def skill_view(
 ):
     """View a skill by id."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
-    data = _api("GET", f"/tasks/{task_id}/skills", params={"q": id})
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
+    data = _api("GET", f"/tasks/{owner}/{slug}/skills", params={"q": id})
     skills = data.get("skills", [])
     match = next((s for s in skills if str(s.get("id")) == str(id)), None)
     if not match:

@@ -6,14 +6,16 @@ import { toPng } from "html-to-image";
 import { useContext } from "@/hooks/use-context";
 import { useGraph } from "@/hooks/use-graph";
 import { apiFetch } from "@/lib/api";
-import { BestRunsResponse } from "@/types/api";
+import { BestRunsResponse, taskPathFrom } from "@/types/api";
 import { ShareImage } from "@/components/share-image";
 
 export default function SharePage() {
   const params = useParams();
-  const taskId = params.id as string;
-  const { data: context, loading: ctxLoading } = useContext(taskId);
-  const { runs, loading: graphLoading } = useGraph(taskId);
+  const owner = params.owner as string;
+  const slug = params.slug as string;
+  const taskPath = taskPathFrom(owner, slug);
+  const { data: context, loading: ctxLoading } = useContext(taskPath);
+  const { runs, loading: graphLoading } = useGraph(taskPath);
   const [leaderboard, setLeaderboard] = useState<BestRunsResponse | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window === "undefined") return "dark";
@@ -25,10 +27,10 @@ export default function SharePage() {
   const captureRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    apiFetch<BestRunsResponse>(`/tasks/${taskId}/runs?view=best_runs`)
+    apiFetch<BestRunsResponse>(`/tasks/${taskPath}/runs?view=best_runs`)
       .then(setLeaderboard)
       .catch(() => {});
-  }, [taskId]);
+  }, [taskPath]);
 
   const loading = ctxLoading || graphLoading || !leaderboard;
 
@@ -42,7 +44,7 @@ export default function SharePage() {
         pixelRatio: 2,
       });
       const link = document.createElement("a");
-      link.download = `hive-${taskId}.png`;
+      link.download = `hive-${owner}-${slug}.png`;
       link.href = dataUrl;
       link.click();
     } finally {

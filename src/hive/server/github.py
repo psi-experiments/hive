@@ -158,9 +158,9 @@ class GitHubApp:
                          headers=self.headers(), timeout=15).json()
         return {"html_url": info["html_url"], "ssh_url": info["ssh_url"], "base_sha": base_sha}
 
-    def create_task_repo(self, task_id: str, archive_bytes: bytes, description: str = "") -> str:
-        """Create task--{task_id} repo under org from uploaded archive (tar.gz or zip). Returns repo URL."""
-        repo_name = f"task--{task_id}"
+    def create_task_repo(self, slug: str, archive_bytes: bytes, description: str = "") -> str:
+        """Create task--{slug} repo under org from uploaded archive (tar.gz or zip). Returns repo URL."""
+        repo_name = f"task--{slug}"
         # Create repo (or get existing)
         existing = httpx.get(
             f"{_GITHUB_API}/repos/{self.org}/{repo_name}",

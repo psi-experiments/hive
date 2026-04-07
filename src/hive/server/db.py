@@ -26,18 +26,21 @@ _PG_SCHEMA = [
         user_id         INTEGER REFERENCES users(id)
     )""",
     """CREATE TABLE IF NOT EXISTS tasks (
-        id              TEXT PRIMARY KEY,
+        id              SERIAL PRIMARY KEY,
+        slug            TEXT NOT NULL,
+        owner           TEXT NOT NULL DEFAULT 'hive',
         name            TEXT NOT NULL,
         description     TEXT NOT NULL,
         repo_url        TEXT NOT NULL,
         config          TEXT,
         created_at      TIMESTAMPTZ NOT NULL,
         best_score      DOUBLE PRECISION,
-        improvements    INTEGER DEFAULT 0
+        improvements    INTEGER DEFAULT 0,
+        UNIQUE(owner, slug)
     )""",
     """CREATE TABLE IF NOT EXISTS forks (
         id              SERIAL PRIMARY KEY,
-        task_id         TEXT NOT NULL REFERENCES tasks(id),
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         fork_url        TEXT NOT NULL,
         ssh_url         TEXT NOT NULL,
@@ -48,7 +51,7 @@ _PG_SCHEMA = [
     )""",
     """CREATE TABLE IF NOT EXISTS runs (
         id              TEXT PRIMARY KEY,
-        task_id         TEXT NOT NULL REFERENCES tasks(id),
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
         parent_id       TEXT REFERENCES runs(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         branch          TEXT NOT NULL,
@@ -71,7 +74,7 @@ _PG_SCHEMA = [
     )""",
     """CREATE TABLE IF NOT EXISTS posts (
         id              SERIAL PRIMARY KEY,
-        task_id         TEXT NOT NULL REFERENCES tasks(id),
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         content         TEXT NOT NULL,
         run_id          TEXT REFERENCES runs(id),
@@ -91,7 +94,7 @@ _PG_SCHEMA = [
     )""",
     """CREATE TABLE IF NOT EXISTS claims (
         id              SERIAL PRIMARY KEY,
-        task_id         TEXT NOT NULL REFERENCES tasks(id),
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         content         TEXT NOT NULL,
         expires_at      TIMESTAMPTZ NOT NULL,
@@ -99,7 +102,7 @@ _PG_SCHEMA = [
     )""",
     """CREATE TABLE IF NOT EXISTS skills (
         id              SERIAL PRIMARY KEY,
-        task_id         TEXT REFERENCES tasks(id),
+        task_id         INTEGER REFERENCES tasks(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         name            TEXT NOT NULL,
         description     TEXT NOT NULL,
@@ -119,7 +122,7 @@ _PG_SCHEMA = [
     """CREATE TABLE IF NOT EXISTS items (
         id              TEXT PRIMARY KEY,
         seq             INTEGER NOT NULL,
-        task_id         TEXT NOT NULL REFERENCES tasks(id),
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
         title           TEXT NOT NULL,
         description     TEXT,
         status          TEXT NOT NULL DEFAULT 'backlog',
@@ -179,6 +182,7 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_post_parent ON comments(post_id, parent_comment_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_task_upvotes ON skills(task_id, upvotes DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner_slug ON tasks(owner, slug)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_visibility_owner ON tasks(visibility, owner_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_token ON agents(token)")
         # Items indexes
@@ -451,6 +455,82 @@ def _ensure_postgres_migrations(conn: psycopg.Connection[Any]) -> None:
         ).fetchone()
         if not row:
             conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {typedef}")
+
+    # --- Task ID TEXT → SERIAL migration ---
+    # Detect old schema: tasks.id is TEXT instead of integer
+    row = conn.execute(
+        "SELECT data_type FROM information_schema.columns"
+        " WHERE table_name = 'tasks' AND column_name = 'id'"
+    ).fetchone()
+    if row and row["data_type"] in ("text", "character varying"):
+        _migrate_task_id_to_serial(conn)
+
+
+def _migrate_task_id_to_serial(conn: psycopg.Connection[Any]) -> None:
+    """One-time migration: tasks.id TEXT PK → SERIAL PK with slug/owner columns."""
+
+    # 1. Add slug, owner, and new_id columns to tasks
+    conn.execute("ALTER TABLE tasks ADD COLUMN slug TEXT")
+    conn.execute("ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'hive'")
+    conn.execute("UPDATE tasks SET slug = id")
+    # Backfill owner for private tasks (user UUID from owner_id FK)
+    conn.execute("""
+        UPDATE tasks SET owner = u.uuid
+        FROM users u WHERE tasks.owner_id = u.id AND tasks.visibility = 'private'
+    """)
+    conn.execute("ALTER TABLE tasks ADD COLUMN new_id SERIAL")
+
+    # 2. Migrate FK tables: add integer column, backfill, swap
+    _fk_tables = ["forks", "runs", "posts", "claims", "skills", "items"]
+    for table in _fk_tables:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN new_task_id INTEGER")
+        conn.execute(f"""
+            UPDATE {table} SET new_task_id = t.new_id
+            FROM tasks t WHERE {table}.task_id = t.id
+        """)
+
+    # 3. Drop old FKs and constraints that reference TEXT task_id
+    # forks: UNIQUE(task_id, agent_id)
+    conn.execute("ALTER TABLE forks DROP CONSTRAINT IF EXISTS forks_task_id_agent_id_key")
+    # items: UNIQUE(task_id, seq)
+    conn.execute("ALTER TABLE items DROP CONSTRAINT IF EXISTS items_task_id_seq_key")
+
+    for table in _fk_tables:
+        conn.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {table}_task_id_fkey")
+
+    # Drop indexes that reference old task_id (they'll be recreated after)
+    for idx in [
+        "idx_runs_task_score", "idx_runs_task_created", "idx_posts_task_created",
+        "idx_skills_task_upvotes", "idx_items_task_status", "idx_items_task_assignee",
+        "idx_items_task_created", "idx_items_task_priority",
+        "idx_runs_task_verified_score", "idx_tasks_visibility_owner",
+    ]:
+        conn.execute(f"DROP INDEX IF EXISTS {idx}")
+
+    # 4. Swap columns
+    for table in _fk_tables:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN task_id")
+        conn.execute(f"ALTER TABLE {table} RENAME COLUMN new_task_id TO task_id")
+        if table == "skills":
+            conn.execute(f"ALTER TABLE {table} ADD CONSTRAINT {table}_task_id_fkey"
+                         " FOREIGN KEY (task_id) REFERENCES tasks(new_id)")
+        else:
+            conn.execute(f"ALTER TABLE {table} ALTER COLUMN task_id SET NOT NULL")
+            conn.execute(f"ALTER TABLE {table} ADD CONSTRAINT {table}_task_id_fkey"
+                         " FOREIGN KEY (task_id) REFERENCES tasks(new_id)")
+
+    # 5. Swap PK on tasks
+    conn.execute("ALTER TABLE tasks DROP CONSTRAINT tasks_pkey")
+    conn.execute("ALTER TABLE tasks DROP COLUMN id")
+    conn.execute("ALTER TABLE tasks RENAME COLUMN new_id TO id")
+    conn.execute("ALTER TABLE tasks ADD PRIMARY KEY (id)")
+
+    # 6. Add owner+slug unique constraint
+    conn.execute("ALTER TABLE tasks ADD CONSTRAINT tasks_owner_slug_key UNIQUE (owner, slug)")
+
+    # 7. Restore composite constraints
+    conn.execute("ALTER TABLE forks ADD CONSTRAINT forks_task_id_agent_id_key UNIQUE (task_id, agent_id)")
+    conn.execute("ALTER TABLE items ADD CONSTRAINT items_task_id_seq_key UNIQUE (task_id, seq)")
 
 
 # --- Async connection pool (one per worker process) ---

@@ -22,10 +22,10 @@ interface GraphResponse {
   truncated: boolean;
 }
 
-function mapNodes(data: GraphResponse, taskId: string): Run[] {
+function mapNodes(data: GraphResponse): Run[] {
   return data.nodes.map((n) => ({
     id: n.sha,
-    task_id: taskId,
+    task_id: 0,
     agent_id: n.agent_id,
     branch: "",
     parent_id: n.parent,
@@ -39,12 +39,13 @@ function mapNodes(data: GraphResponse, taskId: string): Run[] {
   }));
 }
 
-export function useGraph(taskId: string) {
+/** @param taskPath - "owner/slug" identifier for API URLs */
+export function useGraph(taskPath: string) {
   const { data, isLoading } = useSWR<GraphResponse>(
-    taskId ? `/tasks/${taskId}/graph?max_nodes=1000` : null,
+    taskPath ? `/tasks/${taskPath}/graph?max_nodes=1000` : null,
     apiFetch,
     { revalidateOnFocus: false, dedupingInterval: 10000 },
   );
 
-  return { runs: data ? mapNodes(data, taskId) : [], loading: isLoading };
+  return { runs: data ? mapNodes(data) : [], loading: isLoading };
 }

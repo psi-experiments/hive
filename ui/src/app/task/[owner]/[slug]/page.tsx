@@ -13,7 +13,7 @@ import { Feed } from "@/components/feed";
 import { KanbanBoard, KanbanToolbar, KanbanCardModal } from "@/components/kanban";
 import type { KanbanFilters } from "@/components/kanban";
 import { RunDetail } from "@/components/run-detail";
-import { Run } from "@/types/api";
+import { Run, taskPathFrom } from "@/types/api";
 import { Item, ItemStatus } from "@/types/items";
 import { useAuth } from "@/lib/auth";
 import { getAuthHeader } from "@/lib/auth";
@@ -217,22 +217,22 @@ export default function TaskDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const taskId = params.id as string;
-  const { data: context, loading, error, refetch: refetchContext } = useContext(taskId);
-  const { runs, refetch: refetchRuns } = useRuns(taskId);
-  const { items, hasMore: feedHasMore, loadMore: feedLoadMore, loadingMore: feedLoadingMore } = useFeed(taskId);
+  const taskPath = taskPathFrom(params.owner as string, params.slug as string);
+  const { data: context, loading, error, refetch: refetchContext } = useContext(taskPath);
+  const { runs, refetch: refetchRuns } = useRuns(taskPath);
+  const { items, hasMore: feedHasMore, loadMore: feedLoadMore, loadingMore: feedLoadingMore } = useFeed(taskPath);
   const { files: taskFiles, fetchFileContent } = useTaskFiles(context?.task.repo_url);
   const [selectedRun, setSelectedRun] = useState<Run | null>(null);
   const [viewMode, setViewMode] = useState<"about" | "status" | "kanban">("about");
   const { content: readme, loading: readmeLoading } = useReadme(context?.task.repo_url);
 
   // Kanban
-  const { items: kanbanItems, loading: kanbanLoading } = useItems(taskId);
+  const { items: kanbanItems, loading: kanbanLoading } = useItems(taskPath);
   const mutateAllItems = useMutateAllItems();
   const [kanbanFilters, setKanbanFilters] = useState<KanbanFilters>({ status: "all", priority: "all" });
   const [kanbanSearch, setKanbanSearch] = useState("");
   const [selectedCard, setSelectedCard] = useState<Item | null>(null);
-  const { activities: cardActivities, loading: cardActivitiesLoading } = useItemActivity(taskId, selectedCard?.id ?? null);
+  const { activities: cardActivities, loading: cardActivitiesLoading } = useItemActivity(taskPath, selectedCard?.id ?? null);
 
   const filteredKanbanItems = useMemo(() => {
     let result = kanbanItems;
@@ -247,10 +247,10 @@ export default function TaskDetailPage() {
 
   const handleKanbanStatusChange = useCallback(async (itemId: string, status: ItemStatus) => {
     try {
-      await apiPatch(`/tasks/${taskId}/items/${itemId}?token=_`, { status }, getAuthHeader());
-      mutateAllItems(taskId);
-    } catch { mutateAllItems(taskId); }
-  }, [taskId, mutateAllItems]);
+      await apiPatch(`/tasks/${taskPath}/items/${itemId}?token=_`, { status }, getAuthHeader());
+      mutateAllItems(taskPath);
+    } catch { mutateAllItems(taskPath); }
+  }, [taskPath, mutateAllItems]);
 
   // Admin / owner
   const { isAdmin, user } = useAuth();
@@ -265,7 +265,7 @@ export default function TaskDetailPage() {
     setDeleteLoading(true);
     setDeleteError("");
     try {
-      await apiDelete(`/tasks/${taskId}?confirm=${taskId}`, getAuthHeader());
+      await apiDelete(`/tasks/${taskPath}?confirm=${taskPath}`, getAuthHeader());
       router.push("/");
     } catch (e) {
       setDeleteError(e instanceof Error ? e.message : "Failed");
@@ -285,15 +285,15 @@ export default function TaskDetailPage() {
   const [shareDownloading, setShareDownloading] = useState(false);
   const [shareLeaderboard, setShareLeaderboard] = useState<BestRunsResponse | null>(null);
   const shareCaptureRef = useRef<HTMLDivElement>(null);
-  const { runs: graphRuns } = useGraph(showShare ? taskId : "__none__");
+  const { runs: graphRuns } = useGraph(showShare ? taskPath : "__none__");
 
   useEffect(() => {
     if (showShare && !shareLeaderboard) {
-      apiFetch<BestRunsResponse>(`/tasks/${taskId}/runs?view=best_runs`)
+      apiFetch<BestRunsResponse>(`/tasks/${taskPath}/runs?view=best_runs`)
         .then(setShareLeaderboard)
         .catch(() => {});
     }
-  }, [showShare, taskId, shareLeaderboard]);
+  }, [showShare, taskPath, shareLeaderboard]);
 
   async function handleShareDownload() {
     if (!shareCaptureRef.current) return;
@@ -305,7 +305,7 @@ export default function TaskDetailPage() {
         pixelRatio: 2,
       });
       const link = document.createElement("a");
-      link.download = `hive-${taskId}.png`;
+      link.download = `hive-${taskPath.replace("/", "-")}.png`;
       link.href = dataUrl;
       link.click();
     } finally {
@@ -577,16 +577,16 @@ export default function TaskDetailPage() {
               </p>
               <div>
                 <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1.5">
-                  Type <span className="font-[family-name:var(--font-ibm-plex-mono)] text-[var(--color-text)]">{taskId}</span> to confirm
+                  Type <span className="font-[family-name:var(--font-ibm-plex-mono)] text-[var(--color-text)]">{taskPath}</span> to confirm
                 </label>
                 <input
                   type="text"
                   value={deleteConfirmId}
                   onChange={(e) => setDeleteConfirmId(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && deleteConfirmId === taskId && handleDeleteTask()}
+                  onKeyDown={(e) => e.key === "Enter" && deleteConfirmId === taskPath && handleDeleteTask()}
                   style={{ outline: "none", boxShadow: "none" }}
                   className="w-full px-3 py-2 text-sm border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] font-[family-name:var(--font-ibm-plex-mono)] placeholder:text-[var(--color-text-tertiary)]"
-                  placeholder={taskId}
+                  placeholder={taskPath}
                   autoFocus
                 />
               </div>
@@ -594,7 +594,7 @@ export default function TaskDetailPage() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleDeleteTask}
-                  disabled={deleteLoading || deleteConfirmId !== taskId}
+                  disabled={deleteLoading || deleteConfirmId !== taskPath}
                   className="px-4 py-2 text-sm font-medium bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
                 >
                   {deleteLoading ? "Deleting..." : "Delete task"}
@@ -742,7 +742,7 @@ export default function TaskDetailPage() {
         <div className="flex-1 min-w-0 flex flex-col min-h-[300px] md:min-h-0">
           <div className="flex-1 min-h-0">
             <ChartToggle
-              taskId={taskId}
+              taskPath={taskPath}
               onRunClick={handleRunClick}
               verificationEnabled={context?.task?.verification_enabled}
               onVerificationFilterChange={setVerificationFilter}
@@ -796,7 +796,7 @@ export default function TaskDetailPage() {
               </div>
               <div className="flex-1 min-h-0 overflow-hidden">
                 <Leaderboard
-                  taskId={taskId}
+                  taskPath={taskPath}
                   view={leaderboardView}
                   section={context?.task?.verification_enabled ? (verificationFilter === "verified" ? "verified" : "all") : undefined}
                   onRunClick={handleRunIdClick}
@@ -810,7 +810,7 @@ export default function TaskDetailPage() {
             <div className="flex-1 min-h-0 flex flex-col">
               <div className="px-4 pt-3 pb-2 flex items-center justify-between">
                 <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Activity</span>
-                <Link href={`/h/${taskId}`} className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors group">
+                <Link href={`/h/${taskPath}`} className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors group">
                   <span>View all</span>
                   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="group-hover:translate-x-0.5 transition-transform">
                     <path d="M4.5 2.5L8 6l-3.5 3.5" />
@@ -818,7 +818,7 @@ export default function TaskDetailPage() {
                 </Link>
               </div>
               <div className="flex-1 min-h-0 overflow-hidden">
-                <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskId={taskId} hasMore={feedHasMore} onLoadMore={feedLoadMore} loadingMore={feedLoadingMore} />
+                <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskPath={taskPath} hasMore={feedHasMore} onLoadMore={feedLoadMore} loadingMore={feedLoadingMore} />
               </div>
             </div>
           </div>
@@ -837,7 +837,7 @@ export default function TaskDetailPage() {
             </div>
             <div className="max-h-[400px] overflow-y-auto">
               <Leaderboard
-                taskId={taskId}
+                taskPath={taskPath}
                 view={leaderboardView}
                 section={context?.task?.verification_enabled ? (verificationFilter === "verified" ? "verified" : "all") : undefined}
                 onRunClick={handleRunIdClick}
@@ -850,7 +850,7 @@ export default function TaskDetailPage() {
           <div>
             <div className="px-4 pt-3 pb-2 flex items-center justify-between">
               <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Activity</span>
-              <Link href={`/h/${taskId}`} className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors group">
+              <Link href={`/h/${taskPath}`} className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors group">
                 <span>View all</span>
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="group-hover:translate-x-0.5 transition-transform">
                   <path d="M4.5 2.5L8 6l-3.5 3.5" />
@@ -858,7 +858,7 @@ export default function TaskDetailPage() {
               </Link>
             </div>
             <div className="max-h-[500px] overflow-y-auto">
-              <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskId={taskId} />
+              <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskPath={taskPath} />
             </div>
           </div>
         </div>
@@ -866,7 +866,7 @@ export default function TaskDetailPage() {
 
 
       {selectedRun && (
-        <RunDetail run={selectedRun} runs={runs} taskId={taskId} repoUrl={context.task.repo_url} onClose={() => setSelectedRun(null)} onRunUpdated={() => { refetchRuns(); refetchContext(); }} isOwner={isOwner} />
+        <RunDetail run={selectedRun} runs={runs} taskPath={taskPath} repoUrl={context.task.repo_url} onClose={() => setSelectedRun(null)} onRunUpdated={() => { refetchRuns(); refetchContext(); }} isOwner={isOwner} />
       )}
 
       {viewingFile && (

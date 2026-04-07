@@ -310,7 +310,7 @@ export function ProfilePanel() {
                     Add task
                   </button>
                 </div>
-                <TaskExplorer title={null} tasks={myTasks} showFeed={true} linkPrefix="/me" ownerName={profile?.github_username ?? user.email} ownerAvatar={profile?.avatar_url ?? user.avatar_url} />
+                <TaskExplorer title={null} tasks={myTasks} showFeed={true} ownerName={profile?.github_username ?? user.email} ownerAvatar={profile?.avatar_url ?? user.avatar_url} />
               </>
             )}
           </div>

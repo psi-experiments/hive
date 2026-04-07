@@ -17,25 +17,27 @@ from hive.server.verifier import (
 )
 
 
-def _insert_task(task_id="tv1", config=None):
+def _insert_task(slug="tv1", config=None, owner="hive"):
     with get_db_sync() as conn:
-        conn.execute(
-            "INSERT INTO tasks (id, name, description, repo_url, config, created_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s)",
+        row = conn.execute(
+            "INSERT INTO tasks (slug, owner, name, description, repo_url, config, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (
-                task_id,
+                slug,
+                owner,
                 "Verified Task",
                 "A test task",
                 "https://github.com/test/test",
                 json.dumps(config) if config is not None else None,
                 now(),
             ),
-        )
+        ).fetchone()
+        return row["id"]
 
 
-def _insert_verifiable_task(task_id="tv1"):
-    _insert_task(
-        task_id,
+def _insert_verifiable_task(slug="tv1"):
+    return _insert_task(
+        slug,
         {
             "verify": True,
             "verification_mode": "on_submit",
@@ -53,13 +55,13 @@ def _admin_headers(monkeypatch, key="test-key"):
     return {"X-Admin-Key": key}
 
 
-def _submit_and_claim_job(client, token, task_id, sha, *, score=None):
-    clone = client.post(f"/api/tasks/{task_id}/clone", params={"token": token})
+def _submit_and_claim_job(client, token, slug, sha, *, score=None):
+    clone = client.post(f"/api/tasks/hive/{slug}/clone", params={"token": token})
     assert clone.status_code == 201
     payload = {"sha": sha, "branch": "main", "message": "m", "tldr": "t"}
     if score is not None:
         payload["score"] = score
-    submit = client.post(f"/api/tasks/{task_id}/submit", params={"token": token}, json=payload)
+    submit = client.post(f"/api/tasks/hive/{slug}/submit", params={"token": token}, json=payload)
     assert submit.status_code == 201
     job = asyncio.run(claim_next_job())
     assert job is not None
@@ -222,9 +224,9 @@ class TestVerifyEndpoint:
     def test_trigger_verify_sets_pending(self, registered_agent, monkeypatch, mock_github):
         client, _, token = registered_agent
         _insert_verifiable_task("tv-verify")
-        client.post("/api/tasks/tv-verify/clone", params={"token": token})
+        client.post("/api/tasks/hive/tv-verify/clone", params={"token": token})
         submit = client.post(
-            "/api/tasks/tv-verify/submit",
+            "/api/tasks/hive/tv-verify/submit",
             params={"token": token},
             json={"sha": "abc123", "branch": "main", "score": 0.5, "tldr": "t", "message": "m"},
         )
@@ -238,7 +240,7 @@ class TestVerifyEndpoint:
             )
 
         resp = client.post(
-            "/api/tasks/tv-verify/runs/abc123/verify",
+            "/api/tasks/hive/tv-verify/runs/abc123/verify",
             headers=_admin_headers(monkeypatch),
         )
         assert resp.status_code == 200
@@ -259,14 +261,14 @@ class TestVerifyEndpoint:
         monkeypatch.setattr("hive.server.main.ADMIN_KEY", "test-key")
         client, _, token = registered_agent
         _insert_verifiable_task("tv-admin")
-        client.post("/api/tasks/tv-admin/clone", params={"token": token})
+        client.post("/api/tasks/hive/tv-admin/clone", params={"token": token})
         client.post(
-            "/api/tasks/tv-admin/submit",
+            "/api/tasks/hive/tv-admin/submit",
             params={"token": token},
             json={"sha": "admin123", "branch": "main", "score": 0.5, "tldr": "t", "message": "m"},
         )
         resp = client.post(
-            "/api/tasks/tv-admin/runs/admin123/verify",
+            "/api/tasks/hive/tv-admin/runs/admin123/verify",
             headers={"X-Admin-Key": "wrong-key"},
         )
         assert resp.status_code == 403
@@ -274,9 +276,9 @@ class TestVerifyEndpoint:
     def test_trigger_verify_recomputes_task_stats_when_requeued(self, registered_agent, monkeypatch, mock_github):
         client, _, token = registered_agent
         _insert_verifiable_task("tv-requeue")
-        client.post("/api/tasks/tv-requeue/clone", params={"token": token})
+        client.post("/api/tasks/hive/tv-requeue/clone", params={"token": token})
         submit = client.post(
-            "/api/tasks/tv-requeue/submit",
+            "/api/tasks/hive/tv-requeue/submit",
             params={"token": token},
             json={"sha": "requeue123", "branch": "main", "score": 0.5, "tldr": "t", "message": "m"},
         )
@@ -289,17 +291,17 @@ class TestVerifyEndpoint:
                 ("requeue123",),
             )
             conn.execute(
-                "UPDATE tasks SET best_score = 0.9, improvements = 1 WHERE id = %s",
-                ("tv-requeue",),
+                "UPDATE tasks SET best_score = 0.9, improvements = 1 WHERE owner = %s AND slug = %s",
+                ("hive", "tv-requeue"),
             )
 
         resp = client.post(
-            "/api/tasks/tv-requeue/runs/requeue123/verify",
+            "/api/tasks/hive/tv-requeue/runs/requeue123/verify",
             headers=_admin_headers(monkeypatch),
         )
         assert resp.status_code == 200
 
-        task = client.get("/api/tasks/tv-requeue").json()
+        task = client.get("/api/tasks/hive/tv-requeue").json()
         assert task["stats"]["best_score"] is None
         assert task["stats"]["improvements"] == 0
 
@@ -308,7 +310,7 @@ class TestVerifyEndpoint:
         _insert_task("tv-disabled", {"verify": False})
 
         resp = client.post(
-            "/api/tasks/tv-disabled/runs/abc123/verify",
+            "/api/tasks/hive/tv-disabled/runs/abc123/verify",
             headers=_admin_headers(monkeypatch),
         )
         assert resp.status_code == 400
@@ -319,7 +321,7 @@ class TestVerifyEndpoint:
         _insert_verifiable_task("tv-missing")
 
         resp = client.post(
-            "/api/tasks/tv-missing/runs/nope/verify",
+            "/api/tasks/hive/tv-missing/runs/nope/verify",
             headers=_admin_headers(monkeypatch),
         )
         assert resp.status_code == 404
@@ -327,20 +329,20 @@ class TestVerifyEndpoint:
     def test_trigger_verify_rejects_ambiguous_prefix(self, registered_agent, monkeypatch, mock_github):
         client, _, token = registered_agent
         _insert_verifiable_task("tv-ambiguous")
-        client.post("/api/tasks/tv-ambiguous/clone", params={"token": token})
+        client.post("/api/tasks/hive/tv-ambiguous/clone", params={"token": token})
         client.post(
-            "/api/tasks/tv-ambiguous/submit",
+            "/api/tasks/hive/tv-ambiguous/submit",
             params={"token": token},
             json={"sha": "abc12345", "branch": "main", "score": 0.5, "tldr": "t", "message": "m"},
         )
         client.post(
-            "/api/tasks/tv-ambiguous/submit",
+            "/api/tasks/hive/tv-ambiguous/submit",
             params={"token": token},
             json={"sha": "abc12367", "branch": "main", "score": 0.6, "tldr": "t", "message": "m"},
         )
 
         resp = client.post(
-            "/api/tasks/tv-ambiguous/runs/abc123/verify",
+            "/api/tasks/hive/tv-ambiguous/runs/abc123/verify",
             headers=_admin_headers(monkeypatch),
         )
         assert resp.status_code == 400
@@ -348,16 +350,16 @@ class TestVerifyEndpoint:
 
     def test_trigger_verify_rejects_runs_without_fork(self, registered_agent, monkeypatch):
         client, agent_id, _ = registered_agent
-        _insert_verifiable_task("tv-no-fork")
+        task_id = _insert_verifiable_task("tv-no-fork")
         with get_db_sync() as conn:
             conn.execute(
                 "INSERT INTO runs (id, task_id, agent_id, branch, tldr, message, verification_status, created_at)"
                 " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                ("nofork123", "tv-no-fork", agent_id, "main", "t", "m", "pending", now()),
+                ("nofork123", task_id, agent_id, "main", "t", "m", "pending", now()),
             )
 
         resp = client.post(
-            "/api/tasks/tv-no-fork/runs/nofork123/verify",
+            "/api/tasks/hive/tv-no-fork/runs/nofork123/verify",
             headers=_admin_headers(monkeypatch),
         )
         assert resp.status_code == 400
@@ -366,9 +368,9 @@ class TestVerifyEndpoint:
     def test_trigger_verify_rejects_running_runs(self, registered_agent, monkeypatch, mock_github):
         client, _, token = registered_agent
         _insert_verifiable_task("tv-running")
-        client.post("/api/tasks/tv-running/clone", params={"token": token})
+        client.post("/api/tasks/hive/tv-running/clone", params={"token": token})
         client.post(
-            "/api/tasks/tv-running/submit",
+            "/api/tasks/hive/tv-running/submit",
             params={"token": token},
             json={"sha": "running123", "branch": "main", "score": 0.5, "tldr": "t", "message": "m"},
         )
@@ -379,7 +381,7 @@ class TestVerifyEndpoint:
             )
 
         resp = client.post(
-            "/api/tasks/tv-running/runs/running123/verify",
+            "/api/tasks/hive/tv-running/runs/running123/verify",
             headers=_admin_headers(monkeypatch),
         )
         assert resp.status_code == 409
@@ -388,14 +390,14 @@ class TestVerifyEndpoint:
         monkeypatch.setattr("hive.server.main.ADMIN_KEY", "test-key")
         client, _, token = registered_agent
         _insert_verifiable_task("tv-missing-header")
-        client.post("/api/tasks/tv-missing-header/clone", params={"token": token})
+        client.post("/api/tasks/hive/tv-missing-header/clone", params={"token": token})
         client.post(
-            "/api/tasks/tv-missing-header/submit",
+            "/api/tasks/hive/tv-missing-header/submit",
             params={"token": token},
             json={"sha": "missinghdr1", "branch": "main", "score": 0.5, "tldr": "t", "message": "m"},
         )
 
-        resp = client.post("/api/tasks/tv-missing-header/runs/missinghdr1/verify")
+        resp = client.post("/api/tasks/hive/tv-missing-header/runs/missinghdr1/verify")
         assert resp.status_code == 403
 
 
@@ -403,10 +405,10 @@ class TestVerifierWorker:
     def test_verify_run_success_updates_verified_score_and_task_stats(self, registered_agent, mock_github):
         client, _, token = registered_agent
         _insert_verifiable_task("tv-worker")
-        clone = client.post("/api/tasks/tv-worker/clone", params={"token": token})
+        clone = client.post("/api/tasks/hive/tv-worker/clone", params={"token": token})
         assert clone.status_code == 201
         submit = client.post(
-            "/api/tasks/tv-worker/submit",
+            "/api/tasks/hive/tv-worker/submit",
             params={"token": token},
             json={"sha": "worker123", "branch": "main", "message": "m"},
         )
@@ -423,8 +425,8 @@ class TestVerifierWorker:
         run = _load_run("worker123")
         with get_db_sync() as conn:
             task = conn.execute(
-                "SELECT best_score, improvements FROM tasks WHERE id = %s",
-                ("tv-worker",),
+                "SELECT best_score, improvements FROM tasks WHERE owner = %s AND slug = %s",
+                ("hive", "tv-worker"),
             ).fetchone()
 
         assert run["verified"] is True
@@ -511,7 +513,7 @@ class TestVerifierWorker:
                 "INSERT INTO agents (id, registered_at, last_seen_at, total_runs) VALUES (%s, %s, %s, 0)",
                 ("agent-disabled", now(), now()),
             )
-        _insert_task("tv-disabled-worker", {"verify": True})
+        tid = _insert_task("tv-disabled-worker", {"verify": True})
         with get_db_sync() as conn:
             conn.execute(
                 "INSERT INTO runs (id, task_id, agent_id, branch, tldr, message, verification_status,"
@@ -519,7 +521,7 @@ class TestVerifierWorker:
                 " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     "disabled1",
-                    "tv-disabled-worker",
+                    tid,
                     "agent-disabled",
                     "main",
                     "t",
@@ -577,14 +579,14 @@ class TestVerifierWorker:
     def test_failed_verification_does_not_block_next_job(self, registered_agent, mock_github):
         client, _, token = registered_agent
         _insert_verifiable_task("tv-failed-queue")
-        client.post("/api/tasks/tv-failed-queue/clone", params={"token": token})
+        client.post("/api/tasks/hive/tv-failed-queue/clone", params={"token": token})
         client.post(
-            "/api/tasks/tv-failed-queue/submit",
+            "/api/tasks/hive/tv-failed-queue/submit",
             params={"token": token},
             json={"sha": "failedfirst1", "branch": "main", "message": "m", "tldr": "t"},
         )
         client.post(
-            "/api/tasks/tv-failed-queue/submit",
+            "/api/tasks/hive/tv-failed-queue/submit",
             params={"token": token},
             json={"sha": "failednext1", "branch": "main", "message": "m", "tldr": "t"},
         )
@@ -610,22 +612,23 @@ class TestVerifierWorker:
                 "INSERT INTO agents (id, registered_at, last_seen_at, total_runs) VALUES (%s, %s, %s, 0)",
                 ("agent-queue", now(), now()),
             )
-            conn.execute(
-                "INSERT INTO tasks (id, name, description, repo_url, config, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+            tid = conn.execute(
+                "INSERT INTO tasks (slug, owner, name, description, repo_url, config, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
                 (
                     "tv-queue",
+                    "hive",
                     "Verified Task",
                     "A test task",
                     "https://github.com/test/test",
                     json.dumps({"verify": True, "mutable_paths": ["agent.py"]}),
                     now(),
                 ),
-            )
+            ).fetchone()["id"]
             fork_id = conn.execute(
                 "INSERT INTO forks (task_id, agent_id, fork_url, ssh_url, created_at)"
                 " VALUES (%s, %s, %s, %s, %s) RETURNING id",
                 (
-                    "tv-queue",
+                    tid,
                     "agent-queue",
                     "https://github.com/test/fork",
                     "git@github.com:test/fork.git",
@@ -638,7 +641,7 @@ class TestVerifierWorker:
                 " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     "missing-fork-run",
-                    "tv-queue",
+                    tid,
                     "agent-queue",
                     "main",
                     "missing fork",
@@ -655,7 +658,7 @@ class TestVerifierWorker:
                 " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     "next-run",
-                    "tv-queue",
+                    tid,
                     "agent-queue",
                     "main",
                     "next",
@@ -695,22 +698,23 @@ class TestVerifierWorker:
                 "INSERT INTO agents (id, registered_at, last_seen_at, total_runs) VALUES (%s, %s, %s, 0)",
                 ("agent-stale", now(), now()),
             )
-            conn.execute(
-                "INSERT INTO tasks (id, name, description, repo_url, config, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+            tid = conn.execute(
+                "INSERT INTO tasks (slug, owner, name, description, repo_url, config, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
                 (
                     "tv-stale",
+                    "hive",
                     "Verified Task",
                     "A test task",
                     "https://github.com/test/test",
                     json.dumps({"verify": True, "mutable_paths": ["agent.py"]}),
                     now(),
                 ),
-            )
+            ).fetchone()["id"]
             fork_id = conn.execute(
                 "INSERT INTO forks (task_id, agent_id, fork_url, ssh_url, created_at)"
                 " VALUES (%s, %s, %s, %s, %s) RETURNING id",
                 (
-                    "tv-stale",
+                    tid,
                     "agent-stale",
                     "https://github.com/test/fork",
                     "git@github.com:test/fork.git",
@@ -723,7 +727,7 @@ class TestVerifierWorker:
                 " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     "stale-run",
-                    "tv-stale",
+                    tid,
                     "agent-stale",
                     "main",
                     "stale",
@@ -740,7 +744,7 @@ class TestVerifierWorker:
                 " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     "fresh-run",
-                    "tv-stale",
+                    tid,
                     "agent-stale",
                     "main",
                     "fresh",
@@ -797,9 +801,9 @@ class TestConcurrency:
     def test_run_one_job_processes_and_returns_true(self, registered_agent, mock_github, monkeypatch):
         client, _, token = registered_agent
         _insert_verifiable_task("tv-concurrent")
-        client.post("/api/tasks/tv-concurrent/clone", params={"token": token})
+        client.post("/api/tasks/hive/tv-concurrent/clone", params={"token": token})
         client.post(
-            "/api/tasks/tv-concurrent/submit",
+            "/api/tasks/hive/tv-concurrent/submit",
             params={"token": token},
             json={"sha": "conc123", "branch": "main", "message": "m", "tldr": "t"},
         )
@@ -823,9 +827,9 @@ class TestConcurrency:
     def test_run_one_job_handles_daytona_crash(self, registered_agent, mock_github, monkeypatch):
         client, _, token = registered_agent
         _insert_verifiable_task("tv-daytona-crash")
-        client.post("/api/tasks/tv-daytona-crash/clone", params={"token": token})
+        client.post("/api/tasks/hive/tv-daytona-crash/clone", params={"token": token})
         client.post(
-            "/api/tasks/tv-daytona-crash/submit",
+            "/api/tasks/hive/tv-daytona-crash/submit",
             params={"token": token},
             json={"sha": "crash123", "branch": "main", "message": "m", "tldr": "t"},
         )
@@ -851,17 +855,17 @@ class TestConcurrency:
                 "INSERT INTO agents (id, registered_at, last_seen_at, total_runs) VALUES (%s, %s, %s, 0)",
                 ("agent-conc", now(), now()),
             )
-            conn.execute(
-                "INSERT INTO tasks (id, name, description, repo_url, config, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
-                ("tv-conc", "T", "T", "https://github.com/t/t",
+            tid = conn.execute(
+                "INSERT INTO tasks (slug, owner, name, description, repo_url, config, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                ("tv-conc", "hive", "T", "T", "https://github.com/t/t",
                  json.dumps({"verify": True, "mutable_paths": ["a"]}), now()),
-            )
+            ).fetchone()["id"]
             for sha in ["conc-a", "conc-b"]:
                 conn.execute(
                     "INSERT INTO runs (id, task_id, agent_id, branch, tldr, message, score,"
                     " verification_status, verification_config, task_repo_sha, created_at)"
                     " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (sha, "tv-conc", "agent-conc", "main", "t", "m", 1.0,
+                    (sha, tid, "agent-conc", "main", "t", "m", 1.0,
                      "pending", json.dumps({"verify": True, "mutable_paths": ["a"]}),
                      "sha1", now()),
                 )

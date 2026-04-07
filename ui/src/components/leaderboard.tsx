@@ -13,14 +13,14 @@ const LEADERBOARD_OPTIONS: { value: LeaderboardView; label: string }[] = [
 ];
 
 interface LeaderboardProps {
-  taskId: string;
+  taskPath: string;
   view: LeaderboardView;
   section?: string;
   onRunClick?: (runId: string) => void;
 }
 
-export function Leaderboard({ taskId, view, section, onRunClick }: LeaderboardProps) {
-  const data = useLeaderboard(taskId, view, section);
+export function Leaderboard({ taskPath, view, section, onRunClick }: LeaderboardProps) {
+  const data = useLeaderboard(taskPath, view, section);
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
