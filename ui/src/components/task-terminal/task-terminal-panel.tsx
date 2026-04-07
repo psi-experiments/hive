@@ -137,7 +137,7 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
       const key = `t-${created.id}-${Date.now()}`;
       setTabs((prev) => [
         ...prev,
-        { key, sessionId: created.id, title: created.title ?? `Terminal ${created.id}`, ticket: created.ticket },
+        { key, sessionId: created.id, title: created.title ?? "zsh", ticket: created.ticket },
       ]);
       setActiveKey(key);
       await loadSessions();
@@ -162,7 +162,7 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
       const key = `t-${session.id}-${Date.now()}`;
       setTabs((prev) => [
         ...prev,
-        { key, sessionId: session.id, title: session.title ?? `Terminal ${session.id}`, ticket: data.ticket },
+        { key, sessionId: session.id, title: session.title ?? "zsh", ticket: data.ticket },
       ]);
       setActiveKey(key);
     } catch (e) {
@@ -193,6 +193,17 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
     [loadSessions],
   );
 
+  // Auto-open a default terminal when the sandbox becomes ready and there are no sessions
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (autoOpenedRef.current) return;
+    if (sandbox?.status !== "ready") return;
+    if (tabs.length > 0 || sessions.length > 0) return;
+    autoOpenedRef.current = true;
+    void newTerminal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sandbox?.status, tabs.length, sessions.length]);
+
   if (!user) {
     return (
       <div className="flex items-center justify-center h-full p-6 text-sm text-[var(--color-text-secondary)]">
@@ -212,19 +223,24 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
           <p className="p-4 text-sm text-[var(--color-text-secondary)]">Loading workspace…</p>
         )}
 
-        {!sandboxLoading && !sandbox && !sandboxError && (
+        {!sandboxLoading && (!sandbox || sandbox.status === "creating") && !sandboxError && (
           <div className="p-6 space-y-4">
             <p className="text-sm text-[var(--color-text-secondary)]">
               Create a cloud workspace for this task to open an interactive terminal (Daytona).
             </p>
-            <button
-              type="button"
-              onClick={() => void createSandbox()}
-              disabled={creatingSandbox}
-              className="px-6 py-3 text-sm font-medium bg-[var(--color-accent)] text-white rounded-md disabled:opacity-50 hover:bg-[var(--color-accent-hover)] transition-colors"
-            >
-              {creatingSandbox ? "Creating…" : "Create workspace"}
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void createSandbox()}
+                disabled={creating}
+                className="px-6 py-3 text-sm font-medium bg-[var(--color-accent)] text-white rounded-md disabled:opacity-60 hover:bg-[var(--color-accent-hover)] transition-colors"
+              >
+                Create workspace
+              </button>
+              {creating && (
+                <span className="inline-block w-4 h-4 border-2 border-[var(--color-text-tertiary)] border-t-transparent rounded-full animate-spin" aria-label="Creating" />
+              )}
+            </div>
           </div>
         )}
 
@@ -233,10 +249,6 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
         )}
 
         {sandboxError && <p className="p-4 text-sm text-red-500">{sandboxError}</p>}
-
-        {creating && (
-          <p className="p-4 text-sm text-[var(--color-text-secondary)]">Provisioning workspace…</p>
-        )}
 
         {ready && (
           <div className="flex-1 min-h-0 flex flex-col p-2 overflow-hidden">
@@ -257,7 +269,7 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
                       }`}
                       style={{ minWidth: 120 }}
                     >
-                      <span className="truncate flex-1">{tab.title ?? `session ${tab.sessionId}`}</span>
+                      <span className="truncate flex-1">{tab.title ?? "zsh"}</span>
                       <button
                         type="button"
                         aria-label="Close tab"
@@ -301,12 +313,6 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
             </div>
 
             <div className="flex-1 min-h-0 bg-[#1a1b26] overflow-hidden">
-              {tabs.length === 0 && detachedSessions.length === 0 && (
-                <p className="text-sm text-[var(--color-text-tertiary)]">
-                  Click &quot;New terminal&quot; to start a shell.
-                </p>
-              )}
-
               {tabs.length === 0 && detachedSessions.length > 0 && (
                 <div className="space-y-2 mb-4">
                   <p className="text-xs font-medium text-[var(--color-text-secondary)]">
