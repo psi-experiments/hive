@@ -225,6 +225,10 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
 
         {!sandboxLoading && (!sandbox || sandbox.status === "creating") && !sandboxError && (
           <div className="p-6 space-y-4">
+            <div className="flex items-start gap-2 px-3 py-2 border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-xs text-amber-800 dark:text-amber-300">
+              <span className="font-semibold">Beta:</span>
+              <span>Only Claude Code is installed in the sandbox.</span>
+            </div>
             <p className="text-sm text-[var(--color-text-secondary)]">
               Create a cloud workspace for this task to open an interactive terminal (Daytona).
             </p>
@@ -314,30 +318,30 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
 
             <div className="flex-1 min-h-0 bg-[#1a1b26] overflow-hidden">
               {tabs.length === 0 && detachedSessions.length > 0 && (
-                <div className="space-y-2 mb-4">
-                  <p className="text-xs font-medium text-[var(--color-text-secondary)]">
+                <div className="px-4 py-4 space-y-2 font-[family-name:var(--font-ibm-plex-mono)]">
+                  <p className="text-[11px] uppercase tracking-wider text-[#7a82a8]">
                     Active sessions ({detachedSessions.length})
                   </p>
                   {detachedSessions.map((s) => (
                     <div
                       key={s.id}
-                      className="flex items-center justify-between px-3 py-2 border border-[var(--color-border)] rounded bg-[var(--color-layer-1)]"
+                      className="flex items-center justify-between px-3 py-2 border border-[#414868] rounded bg-[#24283b]"
                     >
-                      <span className="text-sm text-[var(--color-text)]">
-                        {s.title ?? `Terminal ${s.id}`}
+                      <span className="text-[13px] text-[#c0caf5]">
+                        {s.title ?? "zsh"}
                       </span>
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
                           onClick={() => void reconnectSession(s)}
-                          className="px-2 py-1 text-xs font-medium rounded bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)]"
+                          className="px-2.5 py-1 text-[11px] font-medium rounded bg-[#7aa2f7] text-[#1a1b26] hover:bg-[#9ab8f9] transition-colors"
                         >
                           Reconnect
                         </button>
                         <button
                           type="button"
                           onClick={() => void closeSession(s.id)}
-                          className="px-2 py-1 text-xs font-medium rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-red-500 hover:border-red-300"
+                          className="px-2.5 py-1 text-[11px] font-medium rounded border border-[#414868] text-[#9aa5ce] hover:text-[#f7768e] hover:border-[#f7768e] transition-colors"
                         >
                           Close
                         </button>
