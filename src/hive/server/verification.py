@@ -250,7 +250,7 @@ def normalize_verified_score(metric_value: float, config: VerificationConfig) ->
     return metric_value
 
 
-async def recompute_task_stats(conn: Any, task_id: str, config: VerificationConfig | None = None) -> None:
+async def recompute_task_stats(conn: Any, task_id: int, config: VerificationConfig | None = None) -> None:
     """Refresh task best-score and improvement counters from official run scores."""
 
     if config is None:

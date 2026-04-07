@@ -107,9 +107,20 @@ async def stop_all_terminal_sessions_for_sandbox(sandbox_id: int) -> None:
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-async def _check_task_access(task_id: str, authorization: str):
+async def _check_task_access(owner: str, slug: str, authorization: str):
     from .main import require_task_access
-    await require_task_access(task_id, authorization)
+    await require_task_access(owner, slug, authorization)
+
+
+async def _resolve_task_id(conn: Any, owner: str, slug: str) -> int:
+    """Look up a task by owner+slug and return the integer task id."""
+    row = await (await conn.execute(
+        "SELECT id FROM tasks WHERE owner = %s AND slug = %s",
+        (owner, slug),
+    )).fetchone()
+    if not row:
+        raise HTTPException(404, "task not found")
+    return row["id"]
 
 
 def _parse_ssh_command(cmd: str) -> tuple[str, int, str]:
@@ -130,7 +141,7 @@ def _parse_ssh_command(cmd: str) -> tuple[str, int, str]:
     return host, port, user
 
 
-async def _load_sandbox_ready(task_id: str, user_id: int) -> dict:
+async def _load_sandbox_ready(task_id: int, user_id: int) -> dict:
     async with get_db() as conn:
         row = await (await conn.execute(
             "SELECT * FROM sandboxes WHERE task_id = %s AND user_id = %s",
@@ -172,13 +183,14 @@ def _mint_ticket() -> tuple[str, Any]:
 
 # ── REST endpoints ───────────────────────────────────────────────────────────
 
-@router.get("/tasks/{task_id}/sandbox/sessions")
-async def list_terminal_sessions(task_id: str, authorization: str = Header("")):
+@router.get("/tasks/{owner}/{slug}/sandbox/sessions")
+async def list_terminal_sessions(owner: str, slug: str, authorization: str = Header("")):
     from .main import require_user as _require_user_fn
     user = await _require_user_fn(authorization)
-    await _check_task_access(task_id, authorization)
+    await _check_task_access(owner, slug, authorization)
     user_id = int(user["sub"])
     async with get_db() as conn:
+        task_id = await _resolve_task_id(conn, owner, slug)
         sb = await (await conn.execute(
             "SELECT id FROM sandboxes WHERE task_id = %s AND user_id = %s",
             (task_id, user_id),
@@ -199,21 +211,25 @@ async def list_terminal_sessions(task_id: str, authorization: str = Header("")):
     return {"sessions": sessions}
 
 
-@router.post("/tasks/{task_id}/sandbox/sessions", status_code=201)
+@router.post("/tasks/{owner}/{slug}/sandbox/sessions", status_code=201)
 async def create_terminal_session(
-    task_id: str,
+    owner: str,
+    slug: str,
     body: Annotated[dict[str, Any] | None, Body()] = None,
     authorization: str = Header(""),
 ):
     from .main import require_user as _require_user_fn
     user = await _require_user_fn(authorization)
-    await _check_task_access(task_id, authorization)
+    await _check_task_access(owner, slug, authorization)
     user_id = int(user["sub"])
     title = (body or {}).get("title")
     if title is not None and not isinstance(title, str):
         raise HTTPException(400, "title must be a string")
     if isinstance(title, str) and len(title) > 200:
         raise HTTPException(400, "title too long")
+
+    async with get_db() as conn:
+        task_id = await _resolve_task_id(conn, owner, slug)
 
     await _load_sandbox_ready(task_id, user_id)
     ticket, exp = _mint_ticket()
@@ -239,19 +255,21 @@ async def create_terminal_session(
     )
 
 
-@router.post("/tasks/{task_id}/sandbox/sessions/{session_id}/ticket", status_code=201)
+@router.post("/tasks/{owner}/{slug}/sandbox/sessions/{session_id}/ticket", status_code=201)
 async def reconnect_ticket(
-    task_id: str,
+    owner: str,
+    slug: str,
     session_id: int,
     authorization: str = Header(""),
 ):
     """Mint a fresh connect ticket for an existing (open) session."""
     from .main import require_user as _require_user_fn
     user = await _require_user_fn(authorization)
-    await _check_task_access(task_id, authorization)
+    await _check_task_access(owner, slug, authorization)
     user_id = int(user["sub"])
     ticket, exp = _mint_ticket()
     async with get_db() as conn:
+        task_id = await _resolve_task_id(conn, owner, slug)
         row = await (await conn.execute(
             "SELECT s.id FROM sandbox_terminal_sessions s"
             " JOIN sandboxes b ON b.id = s.sandbox_id"
@@ -270,17 +288,19 @@ async def reconnect_ticket(
     )
 
 
-@router.delete("/tasks/{task_id}/sandbox/sessions/{session_id}")
+@router.delete("/tasks/{owner}/{slug}/sandbox/sessions/{session_id}")
 async def delete_terminal_session(
-    task_id: str,
+    owner: str,
+    slug: str,
     session_id: int,
     authorization: str = Header(""),
 ):
     from .main import require_user as _require_user_fn
     user = await _require_user_fn(authorization)
-    await _check_task_access(task_id, authorization)
+    await _check_task_access(owner, slug, authorization)
     user_id = int(user["sub"])
     async with get_db() as conn:
+        task_id = await _resolve_task_id(conn, owner, slug)
         row = await (await conn.execute(
             "SELECT s.id, s.user_id FROM sandbox_terminal_sessions s"
             " JOIN sandboxes b ON b.id = s.sandbox_id"
@@ -299,14 +319,15 @@ async def delete_terminal_session(
 
 # ── WebSocket terminal ───────────────────────────────────────────────────────
 
-@router.websocket("/tasks/{task_id}/sandbox/terminal/ws")
+@router.websocket("/tasks/{owner}/{slug}/sandbox/terminal/ws")
 async def terminal_websocket(
     websocket: WebSocket,
-    task_id: str,
+    owner: str,
+    slug: str,
     ticket: str = Query(...),
 ):
     try:
-        row = await _validate_ticket_and_load(task_id, ticket)
+        row = await _validate_ticket_and_load(owner, slug, ticket)
     except HTTPException:
         await websocket.close(code=4403)
         return
@@ -428,7 +449,7 @@ async def terminal_websocket(
             )
 
 
-async def _validate_ticket_and_load(task_id: str, ticket: str) -> dict[str, Any]:
+async def _validate_ticket_and_load(owner: str, slug: str, ticket: str) -> dict[str, Any]:
     async with get_db() as conn:
         row = await (await conn.execute(
             "SELECT s.id AS session_id, s.sandbox_id, s.user_id, s.connect_ticket_expires_at,"
@@ -436,8 +457,8 @@ async def _validate_ticket_and_load(task_id: str, ticket: str) -> dict[str, Any]
             " FROM sandbox_terminal_sessions s"
             " JOIN sandboxes b ON b.id = s.sandbox_id"
             " JOIN tasks t ON t.id = b.task_id"
-            " WHERE t.id = %s AND s.connect_ticket = %s AND s.closed_at IS NULL",
-            (task_id, ticket),
+            " WHERE t.owner = %s AND t.slug = %s AND s.connect_ticket = %s AND s.closed_at IS NULL",
+            (owner, slug, ticket),
         )).fetchone()
         if not row:
             raise HTTPException(404, "invalid or expired ticket")

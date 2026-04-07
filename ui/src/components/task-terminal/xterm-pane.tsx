@@ -7,10 +7,11 @@ import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import { LuX } from "react-icons/lu";
 import { hiveTerminalWebSocketUrl } from "@/lib/ws";
 
 interface XtermPaneProps {
-  taskId: string;
+  taskPath: string;
   ticket: string;
   active: boolean;
   onDisconnected: () => void;
@@ -20,7 +21,7 @@ interface XtermPaneProps {
 const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-B]/g;
 const URL_RE = /https?:\/\/[^\s<>"']+/g;
 
-export function XtermPane({ taskId, ticket, active, onDisconnected }: XtermPaneProps) {
+export function XtermPane({ taskPath, ticket, active, onDisconnected }: XtermPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -37,8 +38,8 @@ export function XtermPane({ taskId, ticket, active, onDisconnected }: XtermPaneP
 
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
-      lineHeight: 1.2,
+      fontSize: 14,
+      lineHeight: 1.25,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
       scrollback: 10000,
       allowProposedApi: true,
@@ -105,7 +106,7 @@ export function XtermPane({ taskId, ticket, active, onDisconnected }: XtermPaneP
       }, 500);
     };
 
-    const wsUrl = hiveTerminalWebSocketUrl(taskId, ticket);
+    const wsUrl = hiveTerminalWebSocketUrl(taskPath, ticket);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -204,7 +205,7 @@ export function XtermPane({ taskId, ticket, active, onDisconnected }: XtermPaneP
       fitRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId, ticket]);
+  }, [taskPath, ticket]);
 
   useEffect(() => {
     if (active && termRef.current && fitRef.current && containerRef.current) {
@@ -240,9 +241,10 @@ export function XtermPane({ taskId, ticket, active, onDisconnected }: XtermPaneP
           <button
             type="button"
             onClick={() => setDetectedUrl(null)}
-            className="text-xs text-[#414868] hover:text-[#a9b1d6] px-1"
+            className="text-[#414868] hover:text-[#a9b1d6] px-1 flex items-center"
+            aria-label="Dismiss"
           >
-            ×
+            <LuX size={14} />
           </button>
         </div>
       )}

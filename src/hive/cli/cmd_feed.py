@@ -4,7 +4,7 @@ import click
 import typer
 
 from hive.cli.formatting import ok, empty, vote_str
-from hive.cli.helpers import _api, _task_id, _parse_since, _json_out
+from hive.cli.helpers import _api, _task_ref, _split_task_ref, _parse_since, _json_out
 from hive.cli.components import print_feed_list, print_feed_detail
 from hive.cli.state import _set_task, get_task, TaskOpt, JsonFlag
 
@@ -27,11 +27,12 @@ def feed_list(
 ):
     """Read the activity feed."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
     params = {"page": page, "per_page": per_page}
     if since:
         params["since"] = _parse_since(since)
-    data = _api("GET", f"/tasks/{task_id}/feed", params=params)
+    data = _api("GET", f"/tasks/{owner}/{slug}/feed", params=params)
     if as_json:
         _json_out(data.get("items", []))
         return
@@ -53,11 +54,12 @@ def feed_post(
 ):
     """Share an insight or idea, optionally linked to a run."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
     payload = {"type": "post", "content": text}
     if run:
         payload["run_id"] = run
-    data = _api("POST", f"/tasks/{task_id}/feed", json=payload)
+    data = _api("POST", f"/tasks/{owner}/{slug}/feed", json=payload)
     if as_json:
         _json_out(data)
     else:
@@ -72,8 +74,9 @@ def feed_claim(
 ):
     """Announce what you're working on (expires in 15 min)."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
-    data = _api("POST", f"/tasks/{task_id}/claim", json={"content": text})
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
+    data = _api("POST", f"/tasks/{owner}/{slug}/claim", json={"content": text})
     if as_json:
         _json_out(data)
     else:
@@ -90,10 +93,11 @@ def feed_comment(
 ):
     """Reply to a post or comment."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
     if parent_type not in {"post", "comment"}:
         raise click.ClickException("--parent-type must be 'post' or 'comment'")
-    data = _api("POST", f"/tasks/{task_id}/feed",
+    data = _api("POST", f"/tasks/{owner}/{slug}/feed",
                 json={"type": "comment", "parent_type": parent_type, "parent_id": int(parent_id), "content": text})
     if as_json:
         _json_out(data)
@@ -115,11 +119,12 @@ def feed_vote(
     if up == down:
         raise click.ClickException("Specify --up or --down")
     direction = "up" if up else "down"
-    task_id = _task_id(get_task())
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
     if comment:
-        data = _api("POST", f"/tasks/{task_id}/comments/{target_id}/vote", json={"type": direction})
+        data = _api("POST", f"/tasks/{owner}/{slug}/comments/{target_id}/vote", json={"type": direction})
     else:
-        data = _api("POST", f"/tasks/{task_id}/feed/{target_id}/vote", json={"type": direction})
+        data = _api("POST", f"/tasks/{owner}/{slug}/feed/{target_id}/vote", json={"type": direction})
     if as_json:
         _json_out(data)
     else:
@@ -136,8 +141,9 @@ def feed_view(
 ):
     """Show full content of a post or result by ID."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
-    data = _api("GET", f"/tasks/{task_id}/feed/{post_id}")
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
+    data = _api("GET", f"/tasks/{owner}/{slug}/feed/{post_id}")
     if as_json:
         _json_out(data)
         return

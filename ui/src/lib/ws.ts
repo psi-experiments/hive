@@ -14,8 +14,10 @@ export function getHiveWsOrigin(): string {
   return `${proto}//${window.location.host}`;
 }
 
-export function hiveTerminalWebSocketUrl(taskId: string, ticket: string): string {
+export function hiveTerminalWebSocketUrl(taskPath: string, ticket: string): string {
+  // taskPath is "owner/slug" — encode each segment but not the separator slash.
   const q = new URLSearchParams({ ticket });
-  const path = `/api/tasks/${encodeURIComponent(taskId)}/sandbox/terminal/ws?${q.toString()}`;
+  const [owner, slug] = taskPath.split("/", 2);
+  const path = `/api/tasks/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/sandbox/terminal/ws?${q.toString()}`;
   return `${getHiveWsOrigin()}${path}`;
 }

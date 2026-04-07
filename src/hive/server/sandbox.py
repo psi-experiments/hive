@@ -84,9 +84,20 @@ def _require_user():
     return Depends(require_user)
 
 
-async def _check_task_access(task_id: str, authorization: str):
+async def _check_task_access(owner: str, slug: str, authorization: str):
     from .main import require_task_access
-    await require_task_access(task_id, authorization)
+    await require_task_access(owner, slug, authorization)
+
+
+async def _resolve_task(conn: Any, owner: str, slug: str) -> dict:
+    """Look up a task by owner+slug. Returns the row dict; raises 404."""
+    row = await (await conn.execute(
+        "SELECT id, repo_url, config FROM tasks WHERE owner = %s AND slug = %s",
+        (owner, slug),
+    )).fetchone()
+    if not row:
+        raise HTTPException(404, "task not found")
+    return dict(row)
 
 
 def _encrypt(value: str | None) -> str | None:
@@ -128,9 +139,9 @@ async def _bootstrap_sandbox(sandbox: Any, repo_url: str) -> None:
         timeout=SANDBOX_BOOTSTRAP_TIMEOUT,
     )
     # hive CLI + Claude skills
-    _skills_base = "https://raw.githubusercontent.com/rllm-org/hive/main/skills"
+    _skills_base = "https://raw.githubusercontent.com/rllm-org/hive/staging/skills"
     await sandbox.process.exec(
-        "pip install --break-system-packages hive-evolve"
+        "pip install --break-system-packages git+https://github.com/rllm-org/hive.git@staging"
         f" && mkdir -p ~/.claude/skills/hive ~/.claude/skills/hive-setup ~/.claude/skills/hive-create-task"
         f" && curl -sfL {_skills_base}/hive/SKILL.md -o ~/.claude/skills/hive/SKILL.md"
         f" && curl -sfL {_skills_base}/hive-setup/SKILL.md -o ~/.claude/skills/hive-setup/SKILL.md"
@@ -140,23 +151,20 @@ async def _bootstrap_sandbox(sandbox: Any, repo_url: str) -> None:
     )
 
 
-@router.post("/tasks/{task_id}/sandbox", status_code=201)
+@router.post("/tasks/{owner}/{slug}/sandbox", status_code=201)
 async def create_sandbox(
-    task_id: str,
+    owner: str,
+    slug: str,
     authorization: str = Header(""),
 ):
     from .main import require_user as _require_user_fn
     user = await _require_user_fn(authorization)
-    await _check_task_access(task_id, authorization)
+    await _check_task_access(owner, slug, authorization)
     user_id = int(user["sub"])
 
     async with get_db() as conn:
-        # Load task
-        task = await (await conn.execute(
-            "SELECT id, repo_url, config FROM tasks WHERE id = %s", (task_id,)
-        )).fetchone()
-        if not task:
-            raise HTTPException(404, "task not found")
+        task = await _resolve_task(conn, owner, slug)
+        task_id = task["id"]
 
         # Check for existing sandbox
         existing = await (await conn.execute(
@@ -214,7 +222,7 @@ async def create_sandbox(
             return _sandbox_response(dict(result), status_code=201)
 
     except Exception as exc:
-        log.exception("Failed to create sandbox for task %s user %s", task_id, user_id)
+        log.exception("Failed to create sandbox for task %s/%s user %s", owner, slug, user_id)
         async with get_db() as conn:
             await conn.execute(
                 "UPDATE sandboxes SET status = 'error', error_message = %s WHERE id = %s",
@@ -260,17 +268,20 @@ async def _reconnect_sandbox(conn: Any, row: dict) -> JSONResponse:
         raise HTTPException(502, f"sandbox reconnection failed: {exc}")
 
 
-@router.get("/tasks/{task_id}/sandbox")
+@router.get("/tasks/{owner}/{slug}/sandbox")
 async def get_sandbox(
-    task_id: str,
+    owner: str,
+    slug: str,
     authorization: str = Header(""),
 ):
     from .main import require_user as _require_user_fn
     user = await _require_user_fn(authorization)
-    await _check_task_access(task_id, authorization)
+    await _check_task_access(owner, slug, authorization)
     user_id = int(user["sub"])
 
     async with get_db() as conn:
+        task = await _resolve_task(conn, owner, slug)
+        task_id = task["id"]
         row = await (await conn.execute(
             "SELECT * FROM sandboxes WHERE task_id = %s AND user_id = %s",
             (task_id, user_id),
@@ -312,17 +323,20 @@ async def get_sandbox(
         return _sandbox_response(row)
 
 
-@router.delete("/tasks/{task_id}/sandbox")
+@router.delete("/tasks/{owner}/{slug}/sandbox")
 async def delete_sandbox(
-    task_id: str,
+    owner: str,
+    slug: str,
     authorization: str = Header(""),
 ):
     from .main import require_user as _require_user_fn
     user = await _require_user_fn(authorization)
-    await _check_task_access(task_id, authorization)
+    await _check_task_access(owner, slug, authorization)
     user_id = int(user["sub"])
 
     async with get_db() as conn:
+        task = await _resolve_task(conn, owner, slug)
+        task_id = task["id"]
         row = await (await conn.execute(
             "SELECT * FROM sandboxes WHERE task_id = %s AND user_id = %s",
             (task_id, user_id),

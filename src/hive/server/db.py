@@ -13,6 +13,7 @@ _PG_SCHEMA = [
     """CREATE TABLE IF NOT EXISTS users (
         id              SERIAL PRIMARY KEY,
         email           TEXT UNIQUE NOT NULL,
+        handle          TEXT UNIQUE NOT NULL,
         password        TEXT NOT NULL,
         role            TEXT NOT NULL DEFAULT 'user',
         created_at      TIMESTAMPTZ NOT NULL
@@ -26,18 +27,21 @@ _PG_SCHEMA = [
         user_id         INTEGER REFERENCES users(id)
     )""",
     """CREATE TABLE IF NOT EXISTS tasks (
-        id              TEXT PRIMARY KEY,
+        id              SERIAL PRIMARY KEY,
+        slug            TEXT NOT NULL,
+        owner           TEXT NOT NULL DEFAULT 'hive',
         name            TEXT NOT NULL,
         description     TEXT NOT NULL,
         repo_url        TEXT NOT NULL,
         config          TEXT,
         created_at      TIMESTAMPTZ NOT NULL,
         best_score      DOUBLE PRECISION,
-        improvements    INTEGER DEFAULT 0
+        improvements    INTEGER DEFAULT 0,
+        UNIQUE(owner, slug)
     )""",
     """CREATE TABLE IF NOT EXISTS forks (
         id              SERIAL PRIMARY KEY,
-        task_id         TEXT NOT NULL REFERENCES tasks(id),
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         fork_url        TEXT NOT NULL,
         ssh_url         TEXT NOT NULL,
@@ -48,7 +52,7 @@ _PG_SCHEMA = [
     )""",
     """CREATE TABLE IF NOT EXISTS runs (
         id              TEXT PRIMARY KEY,
-        task_id         TEXT NOT NULL REFERENCES tasks(id),
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
         parent_id       TEXT REFERENCES runs(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         branch          TEXT NOT NULL,
@@ -71,7 +75,7 @@ _PG_SCHEMA = [
     )""",
     """CREATE TABLE IF NOT EXISTS posts (
         id              SERIAL PRIMARY KEY,
-        task_id         TEXT NOT NULL REFERENCES tasks(id),
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         content         TEXT NOT NULL,
         run_id          TEXT REFERENCES runs(id),
@@ -91,7 +95,7 @@ _PG_SCHEMA = [
     )""",
     """CREATE TABLE IF NOT EXISTS claims (
         id              SERIAL PRIMARY KEY,
-        task_id         TEXT NOT NULL REFERENCES tasks(id),
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         content         TEXT NOT NULL,
         expires_at      TIMESTAMPTZ NOT NULL,
@@ -99,7 +103,7 @@ _PG_SCHEMA = [
     )""",
     """CREATE TABLE IF NOT EXISTS skills (
         id              SERIAL PRIMARY KEY,
-        task_id         TEXT REFERENCES tasks(id),
+        task_id         INTEGER REFERENCES tasks(id),
         agent_id        TEXT NOT NULL REFERENCES agents(id),
         name            TEXT NOT NULL,
         description     TEXT NOT NULL,
@@ -119,7 +123,7 @@ _PG_SCHEMA = [
     """CREATE TABLE IF NOT EXISTS items (
         id              TEXT PRIMARY KEY,
         seq             INTEGER NOT NULL,
-        task_id         TEXT NOT NULL REFERENCES tasks(id),
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
         title           TEXT NOT NULL,
         description     TEXT,
         status          TEXT NOT NULL DEFAULT 'backlog',
@@ -146,6 +150,7 @@ _PG_SCHEMA = [
     """CREATE TABLE IF NOT EXISTS pending_signups (
         email           TEXT PRIMARY KEY,
         password        TEXT NOT NULL,
+        handle          TEXT NOT NULL DEFAULT '',
         code            TEXT NOT NULL,
         expires_at      TIMESTAMPTZ NOT NULL,
         attempts        INTEGER NOT NULL DEFAULT 0,
@@ -165,7 +170,7 @@ _PG_SCHEMA = [
     )""",
     """CREATE TABLE IF NOT EXISTS sandboxes (
         id                  SERIAL PRIMARY KEY,
-        task_id             TEXT NOT NULL REFERENCES tasks(id),
+        task_id             INTEGER NOT NULL REFERENCES tasks(id),
         user_id             INTEGER NOT NULL REFERENCES users(id),
         daytona_sandbox_id  TEXT,
         status              TEXT NOT NULL DEFAULT 'creating',
@@ -178,15 +183,15 @@ _PG_SCHEMA = [
         UNIQUE(task_id, user_id)
     )""",
     """CREATE TABLE IF NOT EXISTS sandbox_terminal_sessions (
-        id                      SERIAL PRIMARY KEY,
-        sandbox_id              INTEGER NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
-        user_id                 INTEGER NOT NULL REFERENCES users(id),
-        title                   TEXT,
-        connect_ticket          TEXT UNIQUE,
-        connect_ticket_expires_at TIMESTAMPTZ,
-        created_at              TIMESTAMPTZ NOT NULL,
-        last_activity_at        TIMESTAMPTZ,
-        closed_at               TIMESTAMPTZ
+        id                          SERIAL PRIMARY KEY,
+        sandbox_id                  INTEGER NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+        user_id                     INTEGER NOT NULL REFERENCES users(id),
+        title                       TEXT,
+        connect_ticket              TEXT UNIQUE,
+        connect_ticket_expires_at   TIMESTAMPTZ,
+        created_at                  TIMESTAMPTZ NOT NULL,
+        last_activity_at            TIMESTAMPTZ,
+        closed_at                   TIMESTAMPTZ
     )""",
 ]
 
@@ -195,6 +200,10 @@ def init_db() -> None:
     """Run DDL and migrations. Call once before workers start (sync)."""
     conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     try:
+        # Legacy schema upgrade — must run before _PG_SCHEMA so that any
+        # new tables (e.g. items) can be created with INTEGER FKs to
+        # tasks(id). On a fresh DB this is a no-op.
+        _migrate_legacy_task_id_if_needed(conn)
         for stmt in _PG_SCHEMA:
             conn.execute(stmt)
         _ensure_postgres_migrations(conn)
@@ -204,6 +213,8 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_post_parent ON comments(post_id, parent_comment_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_task_upvotes ON skills(task_id, upvotes DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner_slug ON tasks(owner, slug)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_handle ON users(handle)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_visibility_owner ON tasks(visibility, owner_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_token ON agents(token)")
         # Items indexes
@@ -482,14 +493,34 @@ def _ensure_postgres_migrations(conn: psycopg.Connection[Any]) -> None:
         if not row:
             conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {typedef}")
 
-    # Sandboxes table for interactive terminal access
+    # --- pending_signups.handle (lock handle during verification window) ---
     row = conn.execute(
-        "SELECT 1 FROM information_schema.tables WHERE table_name = 'sandboxes'"
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'pending_signups' AND column_name = 'handle'"
     ).fetchone()
     if not row:
+        conn.execute("ALTER TABLE pending_signups ADD COLUMN handle TEXT NOT NULL DEFAULT ''")
+
+    # --- users.handle: backfill from email prefix, then enforce UNIQUE NOT NULL ---
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = 'users' AND column_name = 'handle'"
+    ).fetchone()
+    if not row:
+        conn.execute("ALTER TABLE users ADD COLUMN handle TEXT")
+        _backfill_user_handles(conn)
+        conn.execute("CREATE UNIQUE INDEX users_handle_key ON users(handle)")
+        conn.execute("ALTER TABLE users ALTER COLUMN handle SET NOT NULL")
+
+    # Task ID TEXT → SERIAL migration runs in init_db's `_migrate_legacy_task_id_if_needed`
+    # call BEFORE _PG_SCHEMA, so by the time we get here it's already done.
+
+    # Sandbox tables (interactive Daytona-backed workspaces). Both have INTEGER
+    # task_id FKs that match the new tasks(id) PK after the legacy migration.
+    if not _table_exists(conn, "sandboxes"):
         conn.execute("""CREATE TABLE sandboxes (
             id                  SERIAL PRIMARY KEY,
-            task_id             TEXT NOT NULL REFERENCES tasks(id),
+            task_id             INTEGER NOT NULL REFERENCES tasks(id),
             user_id             INTEGER NOT NULL REFERENCES users(id),
             daytona_sandbox_id  TEXT,
             status              TEXT NOT NULL DEFAULT 'creating',
@@ -501,26 +532,187 @@ def _ensure_postgres_migrations(conn: psycopg.Connection[Any]) -> None:
             error_message       TEXT,
             UNIQUE(task_id, user_id)
         )""")
-
-    row = conn.execute(
-        "SELECT 1 FROM information_schema.tables WHERE table_name = 'sandbox_terminal_sessions'"
-    ).fetchone()
-    if not row:
+    if not _table_exists(conn, "sandbox_terminal_sessions"):
         conn.execute("""CREATE TABLE sandbox_terminal_sessions (
-            id                      SERIAL PRIMARY KEY,
-            sandbox_id              INTEGER NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
-            user_id                 INTEGER NOT NULL REFERENCES users(id),
-            title                   TEXT,
-            connect_ticket          TEXT UNIQUE,
-            connect_ticket_expires_at TIMESTAMPTZ,
-            created_at              TIMESTAMPTZ NOT NULL,
-            last_activity_at        TIMESTAMPTZ,
-            closed_at               TIMESTAMPTZ
+            id                          SERIAL PRIMARY KEY,
+            sandbox_id                  INTEGER NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+            user_id                     INTEGER NOT NULL REFERENCES users(id),
+            title                       TEXT,
+            connect_ticket              TEXT UNIQUE,
+            connect_ticket_expires_at   TIMESTAMPTZ,
+            created_at                  TIMESTAMPTZ NOT NULL,
+            last_activity_at            TIMESTAMPTZ,
+            closed_at                   TIMESTAMPTZ
         )""")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_terminal_sessions_sandbox_active"
             " ON sandbox_terminal_sessions(sandbox_id) WHERE closed_at IS NULL"
         )
+
+
+# Reserved handles (kept in sync with main.py RESERVED_HANDLES — see _validate_handle)
+_RESERVED_HANDLES = frozenset({
+    "hive", "admin", "api", "auth", "settings", "login", "signup",
+    "new", "explore", "trending",
+})
+
+
+def _sanitize_email_to_handle(email: str) -> str:
+    """alice.smith+work@gmail.com -> 'alice-smith-work'. Returns '' if too short."""
+    import re as _re
+    local = email.split("@", 1)[0].lower()
+    out = _re.sub(r"[^a-z0-9-]+", "-", local)
+    out = _re.sub(r"-+", "-", out).strip("-")
+    if len(out) < 2:
+        return ""
+    return out[:20].rstrip("-")
+
+
+def _backfill_user_handles(conn: psycopg.Connection[Any]) -> None:
+    """Generate a handle for every user without one. Idempotent."""
+    rows = conn.execute(
+        "SELECT id, email FROM users WHERE handle IS NULL ORDER BY id"
+    ).fetchall()
+    taken: set[str] = set()
+    # Seed with any handles already present (in case of partial backfill)
+    existing = conn.execute("SELECT handle FROM users WHERE handle IS NOT NULL").fetchall()
+    for r in existing:
+        taken.add(r["handle"].lower())
+    for row in rows:
+        base = _sanitize_email_to_handle(row["email"]) or f"user-{row['id']}"
+        candidate = base
+        i = 2
+        while candidate.lower() in taken or candidate.lower() in _RESERVED_HANDLES:
+            suffix = f"-{i}"
+            trimmed = base[: max(2, 20 - len(suffix))].rstrip("-")
+            candidate = f"{trimmed}{suffix}"
+            i += 1
+        taken.add(candidate.lower())
+        conn.execute("UPDATE users SET handle = %s WHERE id = %s", (candidate, row["id"]))
+
+
+def _table_exists(conn: psycopg.Connection[Any], table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.tables"
+        " WHERE table_schema = 'public' AND table_name = %s",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _column_exists(conn: psycopg.Connection[Any], table: str, column: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns"
+        " WHERE table_name = %s AND column_name = %s",
+        (table, column),
+    ).fetchone()
+    return row is not None
+
+
+def _migrate_legacy_task_id_if_needed(conn: psycopg.Connection[Any]) -> None:
+    """If tasks.id is TEXT (legacy), migrate it to SERIAL before _PG_SCHEMA runs.
+
+    This must happen before the schema DDL because _PG_SCHEMA creates new
+    tables (e.g. items) with INTEGER FKs to tasks(id). On a fresh DB the
+    tasks table doesn't exist yet and this is a no-op.
+    """
+    if not _table_exists(conn, "tasks"):
+        return
+    row = conn.execute(
+        "SELECT data_type FROM information_schema.columns"
+        " WHERE table_name = 'tasks' AND column_name = 'id'"
+    ).fetchone()
+    if not row or row["data_type"] not in ("text", "character varying"):
+        return  # already migrated or unexpected type
+
+    # Ensure users.handle exists and is backfilled before we try to use it
+    # as the new owner field for private tasks.
+    if _table_exists(conn, "users") and not _column_exists(conn, "users", "handle"):
+        conn.execute("ALTER TABLE users ADD COLUMN handle TEXT")
+        _backfill_user_handles(conn)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_handle_key ON users(handle)")
+        conn.execute("ALTER TABLE users ALTER COLUMN handle SET NOT NULL")
+
+    _migrate_task_id_to_serial(conn)
+
+
+def _migrate_task_id_to_serial(conn: psycopg.Connection[Any]) -> None:
+    """One-time migration: tasks.id TEXT PK → SERIAL PK with slug/owner columns.
+
+    Skips FK tables that don't exist yet (legacy DBs may pre-date items, etc.).
+    """
+
+    # 1. Add slug, owner, and new_id columns to tasks
+    conn.execute("ALTER TABLE tasks ADD COLUMN slug TEXT")
+    conn.execute("ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'hive'")
+    conn.execute("UPDATE tasks SET slug = id")
+    # Backfill owner for private tasks from users.handle (must run after _backfill_user_handles)
+    if _column_exists(conn, "tasks", "owner_id") and _column_exists(conn, "tasks", "visibility"):
+        conn.execute("""
+            UPDATE tasks SET owner = u.handle
+            FROM users u WHERE tasks.owner_id = u.id AND tasks.visibility = 'private'
+        """)
+    conn.execute("ALTER TABLE tasks ADD COLUMN new_id SERIAL")
+
+    # 2. Migrate FK tables: add integer column, backfill, swap (skip missing tables)
+    _all_fk_tables = ["forks", "runs", "posts", "claims", "skills", "items"]
+    _fk_tables = [t for t in _all_fk_tables if _table_exists(conn, t) and _column_exists(conn, t, "task_id")]
+    for table in _fk_tables:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN new_task_id INTEGER")
+        conn.execute(f"""
+            UPDATE {table} SET new_task_id = t.new_id
+            FROM tasks t WHERE {table}.task_id = t.id
+        """)
+
+    # 3. Drop old FKs and constraints that reference TEXT task_id
+    if "forks" in _fk_tables:
+        conn.execute("ALTER TABLE forks DROP CONSTRAINT IF EXISTS forks_task_id_agent_id_key")
+    if "items" in _fk_tables:
+        conn.execute("ALTER TABLE items DROP CONSTRAINT IF EXISTS items_task_id_seq_key")
+
+    for table in _fk_tables:
+        conn.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {table}_task_id_fkey")
+
+    # Drop indexes that reference old task_id (they'll be recreated after)
+    for idx in [
+        "idx_runs_task_score", "idx_runs_task_created", "idx_posts_task_created",
+        "idx_skills_task_upvotes", "idx_items_task_status", "idx_items_task_assignee",
+        "idx_items_task_created", "idx_items_task_priority",
+        "idx_runs_task_verified_score", "idx_tasks_visibility_owner",
+    ]:
+        conn.execute(f"DROP INDEX IF EXISTS {idx}")
+
+    # 4. Drop old task_id columns from FK tables and rename new_task_id → task_id.
+    #    FK constraints are added back AFTER tasks gets its new PK, since
+    #    PostgreSQL requires the referenced column to have UNIQUE/PRIMARY KEY.
+    for table in _fk_tables:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN task_id")
+        conn.execute(f"ALTER TABLE {table} RENAME COLUMN new_task_id TO task_id")
+
+    # 5. Swap PK on tasks (new_id becomes the new id and PK)
+    conn.execute("ALTER TABLE tasks DROP CONSTRAINT tasks_pkey")
+    conn.execute("ALTER TABLE tasks DROP COLUMN id")
+    conn.execute("ALTER TABLE tasks RENAME COLUMN new_id TO id")
+    conn.execute("ALTER TABLE tasks ADD PRIMARY KEY (id)")
+
+    # 6. Add owner+slug unique constraint and enforce slug NOT NULL
+    conn.execute("ALTER TABLE tasks ALTER COLUMN slug SET NOT NULL")
+    conn.execute("ALTER TABLE tasks ADD CONSTRAINT tasks_owner_slug_key UNIQUE (owner, slug)")
+
+    # 7. Now that tasks(id) is the PK, add FK constraints back on FK tables.
+    for table in _fk_tables:
+        if table != "skills":
+            conn.execute(f"ALTER TABLE {table} ALTER COLUMN task_id SET NOT NULL")
+        conn.execute(
+            f"ALTER TABLE {table} ADD CONSTRAINT {table}_task_id_fkey"
+            " FOREIGN KEY (task_id) REFERENCES tasks(id)"
+        )
+
+    # 8. Restore composite constraints (only on tables that exist)
+    if "forks" in _fk_tables:
+        conn.execute("ALTER TABLE forks ADD CONSTRAINT forks_task_id_agent_id_key UNIQUE (task_id, agent_id)")
+    if "items" in _fk_tables:
+        conn.execute("ALTER TABLE items ADD CONSTRAINT items_task_id_seq_key UNIQUE (task_id, seq)")
 
 
 # --- Async connection pool (one per worker process) ---

@@ -7,13 +7,13 @@ import { useContext } from "@/hooks/use-context";
 import { useRuns } from "@/hooks/use-runs";
 import { useFeed } from "@/hooks/use-feed";
 import { useItems, useItemActivity, useMutateAllItems } from "@/hooks/use-items";
-import { ChartToggle } from "@/components/chart-toggle";
+import { ChartToggle, VerificationFilter } from "@/components/chart-toggle";
 import { Leaderboard, LeaderboardToggle, LeaderboardView } from "@/components/leaderboard";
 import { Feed } from "@/components/feed";
 import { KanbanBoard, KanbanToolbar, KanbanCardModal } from "@/components/kanban";
 import type { KanbanFilters } from "@/components/kanban";
 import { RunDetail } from "@/components/run-detail";
-import { Run } from "@/types/api";
+import { Run, taskPathFrom } from "@/types/api";
 import { Item, ItemStatus } from "@/types/items";
 import { useAuth } from "@/lib/auth";
 import { getAuthHeader } from "@/lib/auth";
@@ -30,7 +30,8 @@ import { useGraph } from "@/hooks/use-graph";
 import { apiFetch } from "@/lib/api";
 import { BestRunsResponse } from "@/types/api";
 import { ShareImage } from "@/components/share-image";
-import { TaskTerminalModal } from "@/components/task-terminal/task-terminal-modal";
+import { TaskTerminalPanel } from "@/components/task-terminal/task-terminal-panel";
+import { LuInfo, LuActivity, LuTerminal } from "react-icons/lu";
 import "github-markdown-css/github-markdown-light.css";
 
 function useReadme(repoUrl: string | undefined) {
@@ -218,22 +219,22 @@ export default function TaskDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const taskId = params.id as string;
-  const { data: context, loading, error, refetch: refetchContext } = useContext(taskId);
-  const { runs, refetch: refetchRuns } = useRuns(taskId);
-  const { items, hasMore: feedHasMore, loadMore: feedLoadMore, loadingMore: feedLoadingMore } = useFeed(taskId);
+  const taskPath = taskPathFrom(params.owner as string, params.slug as string);
+  const { data: context, loading, error, refetch: refetchContext } = useContext(taskPath);
+  const { runs, refetch: refetchRuns } = useRuns(taskPath);
+  const { items, hasMore: feedHasMore, loadMore: feedLoadMore, loadingMore: feedLoadingMore } = useFeed(taskPath);
   const { files: taskFiles, fetchFileContent } = useTaskFiles(context?.task.repo_url);
   const [selectedRun, setSelectedRun] = useState<Run | null>(null);
-  const [viewMode, setViewMode] = useState<"about" | "status" | "kanban">("about");
+  const [viewMode, setViewMode] = useState<"about" | "activity" | "sandbox">("about");
   const { content: readme, loading: readmeLoading } = useReadme(context?.task.repo_url);
 
   // Kanban
-  const { items: kanbanItems, loading: kanbanLoading } = useItems(taskId);
+  const { items: kanbanItems, loading: kanbanLoading } = useItems(taskPath);
   const mutateAllItems = useMutateAllItems();
   const [kanbanFilters, setKanbanFilters] = useState<KanbanFilters>({ status: "all", priority: "all" });
   const [kanbanSearch, setKanbanSearch] = useState("");
   const [selectedCard, setSelectedCard] = useState<Item | null>(null);
-  const { activities: cardActivities, loading: cardActivitiesLoading } = useItemActivity(taskId, selectedCard?.id ?? null);
+  const { activities: cardActivities, loading: cardActivitiesLoading } = useItemActivity(taskPath, selectedCard?.id ?? null);
 
   const filteredKanbanItems = useMemo(() => {
     let result = kanbanItems;
@@ -248,10 +249,10 @@ export default function TaskDetailPage() {
 
   const handleKanbanStatusChange = useCallback(async (itemId: string, status: ItemStatus) => {
     try {
-      await apiPatch(`/tasks/${taskId}/items/${itemId}?token=_`, { status }, getAuthHeader());
-      mutateAllItems(taskId);
-    } catch { mutateAllItems(taskId); }
-  }, [taskId, mutateAllItems]);
+      await apiPatch(`/tasks/${taskPath}/items/${itemId}?token=_`, { status }, getAuthHeader());
+      mutateAllItems(taskPath);
+    } catch { mutateAllItems(taskPath); }
+  }, [taskPath, mutateAllItems]);
 
   // Admin / owner
   const { isAdmin, user } = useAuth();
@@ -266,7 +267,7 @@ export default function TaskDetailPage() {
     setDeleteLoading(true);
     setDeleteError("");
     try {
-      await apiDelete(`/tasks/${taskId}?confirm=${taskId}`, getAuthHeader());
+      await apiDelete(`/tasks/${taskPath}?confirm=${taskPath}`, getAuthHeader());
       router.push("/");
     } catch (e) {
       setDeleteError(e instanceof Error ? e.message : "Failed");
@@ -274,8 +275,6 @@ export default function TaskDetailPage() {
       setDeleteLoading(false);
     }
   };
-
-  const [showTerminal, setShowTerminal] = useState(false);
 
   // Share modal
   const [showShare, setShowShare] = useState(false);
@@ -288,15 +287,15 @@ export default function TaskDetailPage() {
   const [shareDownloading, setShareDownloading] = useState(false);
   const [shareLeaderboard, setShareLeaderboard] = useState<BestRunsResponse | null>(null);
   const shareCaptureRef = useRef<HTMLDivElement>(null);
-  const { runs: graphRuns } = useGraph(showShare ? taskId : "__none__");
+  const { runs: graphRuns } = useGraph(showShare ? taskPath : "__none__");
 
   useEffect(() => {
     if (showShare && !shareLeaderboard) {
-      apiFetch<BestRunsResponse>(`/tasks/${taskId}/runs?view=best_runs`)
+      apiFetch<BestRunsResponse>(`/tasks/${taskPath}/runs?view=best_runs`)
         .then(setShareLeaderboard)
         .catch(() => {});
     }
-  }, [showShare, taskId, shareLeaderboard]);
+  }, [showShare, taskPath, shareLeaderboard]);
 
   async function handleShareDownload() {
     if (!shareCaptureRef.current) return;
@@ -308,7 +307,7 @@ export default function TaskDetailPage() {
         pixelRatio: 2,
       });
       const link = document.createElement("a");
-      link.download = `hive-${taskId}.png`;
+      link.download = `hive-${taskPath.replace("/", "-")}.png`;
       link.href = dataUrl;
       link.click();
     } finally {
@@ -341,6 +340,7 @@ export default function TaskDetailPage() {
     }
   }, [runParam, runs]);
   const [leaderboardView, setLeaderboardView] = useState<LeaderboardView>("best_runs");
+  const [verificationFilter, setVerificationFilter] = useState<VerificationFilter>("all");
   const [viewingFile, setViewingFile] = useState<{ path: string; content: string } | null>(null);
   const [fileLoading, setFileLoading] = useState<string | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -504,69 +504,41 @@ export default function TaskDetailPage() {
             {context.task.name}
           </h1>
         </div>
-        {/* Centered toggle */}
-        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center border border-[var(--color-border)] rounded-none text-xs font-medium">
-          <button
-            onClick={() => setViewMode("about")}
-            className={`px-3 py-1.5 transition-colors ${viewMode === "about" ? "bg-[var(--color-accent)] text-white" : "text-[var(--color-text-secondary)] hover:bg-[var(--color-layer-2)]"}`}
-          >
-            About
-          </button>
-          <button
-            onClick={() => setViewMode("status")}
-            className={`px-3 py-1.5 transition-colors ${viewMode === "status" ? "bg-[var(--color-accent)] text-white" : "text-[var(--color-text-secondary)] hover:bg-[var(--color-layer-2)]"}`}
-          >
-            Status
-          </button>
-        </div>
         <TaskStats agents={s.agents_contributing} runs={s.total_runs} />
-        {user && (
+        <div className="relative ml-2">
           <button
-            type="button"
-            onClick={() => setShowTerminal(true)}
-            aria-label="Sandbox terminal"
-            title="Sandbox terminal"
-            className="ml-2 px-2 py-1 rounded-lg text-xs font-medium bg-[var(--color-layer-1)] border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] hover:border-[var(--color-accent)] transition-all"
+            onClick={() => setAdminMenuOpen(!adminMenuOpen)}
+            aria-label="Task menu"
+            className="w-8 h-8 rounded-lg bg-[var(--color-layer-1)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-[var(--color-text)] transition-colors"
           >
-            Terminal
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+              <circle cx="7" cy="3" r="1.2" />
+              <circle cx="7" cy="7" r="1.2" />
+              <circle cx="7" cy="11" r="1.2" />
+            </svg>
           </button>
-        )}
-        <button
-          onClick={() => setShowShare(true)}
-          aria-label="Share image"
-          className="w-8 h-8 rounded-lg bg-[var(--color-layer-1)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] hover:border-[var(--color-accent)] transition-all ml-2"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
-          </svg>
-        </button>
-        {(isAdmin || isOwner) && (
-          <div className="relative ml-1">
-            <button
-              onClick={() => setAdminMenuOpen(!adminMenuOpen)}
-              className="w-8 h-8 rounded-lg bg-[var(--color-layer-1)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-[var(--color-text)] transition-colors"
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
-                <circle cx="7" cy="3" r="1.2" />
-                <circle cx="7" cy="7" r="1.2" />
-                <circle cx="7" cy="11" r="1.2" />
-              </svg>
-            </button>
-            {adminMenuOpen && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setAdminMenuOpen(false)} />
-                <div className="absolute right-0 top-10 z-20 bg-[var(--color-surface)] border border-[var(--color-border)] shadow-lg py-1 min-w-[160px]">
+          {adminMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setAdminMenuOpen(false)} />
+              <div className="absolute right-0 top-10 z-20 bg-[var(--color-surface)] border border-[var(--color-border)] shadow-lg py-1 min-w-[160px]">
+                <button
+                  onClick={() => { setAdminMenuOpen(false); setShowShare(true); }}
+                  className="w-full text-left px-3 py-2 text-xs font-medium text-[var(--color-text)] hover:bg-[var(--color-layer-2)] transition-colors"
+                >
+                  Share image
+                </button>
+                {(isAdmin || isOwner) && (
                   <button
                     onClick={() => { setAdminMenuOpen(false); setShowDeleteTask(true); }}
                     className="w-full text-left px-3 py-2 text-xs font-medium text-red-500 hover:bg-red-500/10 transition-colors"
                   >
                     Delete task
                   </button>
-                </div>
-              </>
-            )}
-          </div>
-        )}
+                )}
+              </div>
+            </>
+          )}
+        </div>
       </header>
 
       {/* Delete task confirmation */}
@@ -590,16 +562,16 @@ export default function TaskDetailPage() {
               </p>
               <div>
                 <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1.5">
-                  Type <span className="font-[family-name:var(--font-ibm-plex-mono)] text-[var(--color-text)]">{taskId}</span> to confirm
+                  Type <span className="font-[family-name:var(--font-ibm-plex-mono)] text-[var(--color-text)]">{taskPath}</span> to confirm
                 </label>
                 <input
                   type="text"
                   value={deleteConfirmId}
                   onChange={(e) => setDeleteConfirmId(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && deleteConfirmId === taskId && handleDeleteTask()}
+                  onKeyDown={(e) => e.key === "Enter" && deleteConfirmId === taskPath && handleDeleteTask()}
                   style={{ outline: "none", boxShadow: "none" }}
                   className="w-full px-3 py-2 text-sm border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] font-[family-name:var(--font-ibm-plex-mono)] placeholder:text-[var(--color-text-tertiary)]"
-                  placeholder={taskId}
+                  placeholder={taskPath}
                   autoFocus
                 />
               </div>
@@ -607,7 +579,7 @@ export default function TaskDetailPage() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleDeleteTask}
-                  disabled={deleteLoading || deleteConfirmId !== taskId}
+                  disabled={deleteLoading || deleteConfirmId !== taskPath}
                   className="px-4 py-2 text-sm font-medium bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
                 >
                   {deleteLoading ? "Deleting..." : "Delete task"}
@@ -623,6 +595,36 @@ export default function TaskDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Content + left rail */}
+      <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
+
+      {/* Left rail tab nav */}
+      <nav className="hidden md:flex flex-col shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface)] py-2 px-2" style={{ width: 180 }}>
+        {([
+          { id: "about", label: "About", Icon: LuInfo },
+          { id: "activity", label: "Activity", Icon: LuActivity },
+          { id: "sandbox", label: "Sandbox", Icon: LuTerminal },
+        ] as const).map((t) => {
+          const active = viewMode === t.id;
+          const Icon = t.Icon;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setViewMode(t.id)}
+              className={`w-full flex items-center gap-3 px-3 py-2 text-sm font-medium transition-colors duration-150 ${
+                active
+                  ? "bg-[var(--color-accent-50)] text-[var(--color-accent)]"
+                  : "text-[var(--color-text-secondary)] hover:bg-[var(--color-layer-1)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              <Icon size={18} className="flex-shrink-0" />
+              <span>{t.label}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       {/* About view */}
       {viewMode === "about" && (
@@ -749,12 +751,17 @@ export default function TaskDetailPage() {
         </main>
       )}
 
-      {/* Status view — fills remaining space */}
-      <main ref={containerRef} className={`flex-1 min-h-0 flex flex-col md:flex-row bg-[var(--color-surface)] overflow-hidden md:overflow-hidden overflow-y-auto ${viewMode !== "status" ? "hidden" : ""}`}>
+      {/* Activity view — fills remaining space */}
+      <main ref={containerRef} className={`flex-1 min-h-0 flex flex-col md:flex-row bg-[var(--color-surface)] overflow-hidden md:overflow-hidden overflow-y-auto ${viewMode !== "activity" ? "hidden" : ""}`}>
         {/* Chart panel */}
         <div className="flex-1 min-w-0 flex flex-col min-h-[300px] md:min-h-0">
           <div className="flex-1 min-h-0">
-            <ChartToggle taskId={taskId} onRunClick={handleRunClick} />
+            <ChartToggle
+              taskPath={taskPath}
+              onRunClick={handleRunClick}
+              verificationEnabled={context?.task?.verification_enabled}
+              onVerificationFilterChange={setVerificationFilter}
+            />
           </div>
         </div>
 
@@ -795,11 +802,20 @@ export default function TaskDetailPage() {
             {/* Leaderboard section */}
             <div className="flex-1 min-h-0 flex flex-col">
               <div className="px-4 pt-3 pb-2 flex items-center justify-between">
-                <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Leaderboard</span>
-                <LeaderboardToggle view={leaderboardView} onChange={setLeaderboardView} />
+                <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">
+                  Leaderboard{context?.task?.verification_enabled && verificationFilter === "verified" ? " — Verified" : ""}
+                </span>
+                {(!context?.task?.verification_enabled || verificationFilter === "all") && (
+                  <LeaderboardToggle view={leaderboardView} onChange={setLeaderboardView} />
+                )}
               </div>
               <div className="flex-1 min-h-0 overflow-hidden">
-                <Leaderboard taskId={taskId} view={leaderboardView} onRunClick={handleRunIdClick} />
+                <Leaderboard
+                  taskPath={taskPath}
+                  view={leaderboardView}
+                  section={context?.task?.verification_enabled ? (verificationFilter === "verified" ? "verified" : "all") : undefined}
+                  onRunClick={handleRunIdClick}
+                />
               </div>
             </div>
 
@@ -809,7 +825,7 @@ export default function TaskDetailPage() {
             <div className="flex-1 min-h-0 flex flex-col">
               <div className="px-4 pt-3 pb-2 flex items-center justify-between">
                 <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Activity</span>
-                <Link href={`/h/${taskId}`} className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors group">
+                <Link href={`/h/${taskPath}`} className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors group">
                   <span>View all</span>
                   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="group-hover:translate-x-0.5 transition-transform">
                     <path d="M4.5 2.5L8 6l-3.5 3.5" />
@@ -817,7 +833,7 @@ export default function TaskDetailPage() {
                 </Link>
               </div>
               <div className="flex-1 min-h-0 overflow-hidden">
-                <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskId={taskId} hasMore={feedHasMore} onLoadMore={feedLoadMore} loadingMore={feedLoadingMore} />
+                <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskPath={taskPath} hasMore={feedHasMore} onLoadMore={feedLoadMore} loadingMore={feedLoadingMore} />
               </div>
             </div>
           </div>
@@ -827,11 +843,20 @@ export default function TaskDetailPage() {
         <div className="md:hidden w-full shrink-0">
           <div className="border-t border-[var(--color-border)]">
             <div className="px-4 pt-3 pb-2 flex items-center justify-between">
-              <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Leaderboard</span>
-              <LeaderboardToggle view={leaderboardView} onChange={setLeaderboardView} />
+              <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">
+                Leaderboard{context?.task?.verification_enabled && verificationFilter === "verified" ? " — Verified" : ""}
+              </span>
+              {(!context?.task?.verification_enabled || verificationFilter === "all") && (
+                <LeaderboardToggle view={leaderboardView} onChange={setLeaderboardView} />
+              )}
             </div>
             <div className="max-h-[400px] overflow-y-auto">
-              <Leaderboard taskId={taskId} view={leaderboardView} onRunClick={handleRunIdClick} />
+              <Leaderboard
+                taskPath={taskPath}
+                view={leaderboardView}
+                section={context?.task?.verification_enabled ? (verificationFilter === "verified" ? "verified" : "all") : undefined}
+                onRunClick={handleRunIdClick}
+              />
             </div>
           </div>
 
@@ -840,7 +865,7 @@ export default function TaskDetailPage() {
           <div>
             <div className="px-4 pt-3 pb-2 flex items-center justify-between">
               <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Activity</span>
-              <Link href={`/h/${taskId}`} className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors group">
+              <Link href={`/h/${taskPath}`} className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors group">
                 <span>View all</span>
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="group-hover:translate-x-0.5 transition-transform">
                   <path d="M4.5 2.5L8 6l-3.5 3.5" />
@@ -848,23 +873,27 @@ export default function TaskDetailPage() {
               </Link>
             </div>
             <div className="max-h-[500px] overflow-y-auto">
-              <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskId={taskId} />
+              <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskPath={taskPath} />
             </div>
           </div>
         </div>
       </main>
 
+      {/* Sandbox view */}
+      {viewMode === "sandbox" && (
+        <main className="flex-1 min-h-0 flex flex-col bg-[var(--color-surface)] overflow-hidden">
+          <TaskTerminalPanel taskPath={taskPath} active={viewMode === "sandbox"} />
+        </main>
+      )}
+
+      </div>
 
       {selectedRun && (
-        <RunDetail run={selectedRun} runs={runs} taskId={taskId} repoUrl={context.task.repo_url} onClose={() => setSelectedRun(null)} onRunUpdated={() => { refetchRuns(); refetchContext(); }} isOwner={isOwner} />
+        <RunDetail run={selectedRun} runs={runs} taskPath={taskPath} repoUrl={context.task.repo_url} onClose={() => setSelectedRun(null)} onRunUpdated={() => { refetchRuns(); refetchContext(); }} isOwner={isOwner} />
       )}
 
       {viewingFile && (
         <FileViewer path={viewingFile.path} content={viewingFile.content} onClose={() => setViewingFile(null)} />
-      )}
-
-      {showTerminal && (
-        <TaskTerminalModal taskId={taskId} open={showTerminal} onClose={() => setShowTerminal(false)} />
       )}
 
       {/* Share Image Modal */}

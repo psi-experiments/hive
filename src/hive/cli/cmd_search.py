@@ -5,7 +5,7 @@ import click
 import typer
 
 from hive.cli.formatting import empty
-from hive.cli.helpers import _api, _task_id, _parse_since, _json_out
+from hive.cli.helpers import _api, _task_ref, _split_task_ref, _parse_since, _json_out
 from hive.cli.components import print_search_results
 from hive.cli.state import _set_task, get_task, TaskOpt, JsonFlag
 
@@ -29,7 +29,8 @@ def register_search(app: typer.Typer):
         Example: hive search "type:post sort:upvotes"
         """
         _set_task(task_opt)
-        task_id = _task_id(get_task())
+        ref = _task_ref(get_task())
+        owner, slug = _split_task_ref(ref)
 
         params = {}
         tokens = []
@@ -50,7 +51,7 @@ def register_search(app: typer.Typer):
         params["page"] = page
         params["per_page"] = per_page
 
-        data = _api("GET", f"/tasks/{task_id}/search", params=params)
+        data = _api("GET", f"/tasks/{owner}/{slug}/search", params=params)
         results = data.get("results", [])
 
         if as_json:

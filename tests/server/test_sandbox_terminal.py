@@ -16,10 +16,10 @@ class TestSandboxTerminalSessions:
         token, _ = _create_user(client)
         _seed_task()
         _patch_daytona(monkeypatch)
-        resp = client.get("/api/tasks/sandbox-task/sandbox/sessions", headers=_auth(token))
+        resp = client.get("/api/tasks/hive/sandbox-task/sandbox/sessions", headers=_auth(token))
         assert resp.status_code == 404
 
-        resp = client.post("/api/tasks/sandbox-task/sandbox/sessions", headers=_auth(token), json={})
+        resp = client.post("/api/tasks/hive/sandbox-task/sandbox/sessions", headers=_auth(token), json={})
         assert resp.status_code == 404
 
     def test_sessions_crud_and_isolation(self, client, monkeypatch):
@@ -28,10 +28,10 @@ class TestSandboxTerminalSessions:
         _seed_task()
         _patch_daytona(monkeypatch)
 
-        client.post("/api/tasks/sandbox-task/sandbox", headers=_auth(token_a))
+        client.post("/api/tasks/hive/sandbox-task/sandbox", headers=_auth(token_a))
 
         r = client.post(
-            "/api/tasks/sandbox-task/sandbox/sessions",
+            "/api/tasks/hive/sandbox-task/sandbox/sessions",
             headers=_auth(token_a),
             json={"title": "shell 1"},
         )
@@ -41,35 +41,35 @@ class TestSandboxTerminalSessions:
         assert body["ticket"]
         assert body["title"] == "shell 1"
 
-        r = client.get("/api/tasks/sandbox-task/sandbox/sessions", headers=_auth(token_a))
+        r = client.get("/api/tasks/hive/sandbox-task/sandbox/sessions", headers=_auth(token_a))
         assert r.status_code == 200
         sessions = r.json()["sessions"]
         assert len(sessions) == 1
         assert sessions[0]["title"] == "shell 1"
         sid = sessions[0]["id"]
 
-        r = client.delete(f"/api/tasks/sandbox-task/sandbox/sessions/{sid}", headers=_auth(token_b))
+        r = client.delete(f"/api/tasks/hive/sandbox-task/sandbox/sessions/{sid}", headers=_auth(token_b))
         assert r.status_code == 404
 
-        r = client.delete(f"/api/tasks/sandbox-task/sandbox/sessions/{sid}", headers=_auth(token_a))
+        r = client.delete(f"/api/tasks/hive/sandbox-task/sandbox/sessions/{sid}", headers=_auth(token_a))
         assert r.status_code == 200
         assert r.json()["status"] == "closed"
 
-        r = client.get("/api/tasks/sandbox-task/sandbox/sessions", headers=_auth(token_a))
+        r = client.get("/api/tasks/hive/sandbox-task/sandbox/sessions", headers=_auth(token_a))
         assert r.json()["sessions"] == []
 
     def test_sessions_require_auth(self, client, monkeypatch):
         _seed_task()
         _patch_daytona(monkeypatch)
-        assert client.get("/api/tasks/sandbox-task/sandbox/sessions").status_code in (401, 422)
-        assert client.post("/api/tasks/sandbox-task/sandbox/sessions", json={}).status_code in (401, 422)
+        assert client.get("/api/tasks/hive/sandbox-task/sandbox/sessions").status_code in (401, 422)
+        assert client.post("/api/tasks/hive/sandbox-task/sandbox/sessions", json={}).status_code in (401, 422)
 
     def test_delete_sandbox_cascades_terminal_sessions(self, client, monkeypatch):
         token, _ = _create_user(client, "term-cascade@test.com")
         _seed_task()
         _patch_daytona(monkeypatch)
-        client.post("/api/tasks/sandbox-task/sandbox", headers=_auth(token))
-        r = client.post("/api/tasks/sandbox-task/sandbox/sessions", headers=_auth(token), json={})
+        client.post("/api/tasks/hive/sandbox-task/sandbox", headers=_auth(token))
+        r = client.post("/api/tasks/hive/sandbox-task/sandbox/sessions", headers=_auth(token), json={})
         session_id = r.json()["id"]
         with get_db_sync() as conn:
             row = conn.execute(
@@ -78,7 +78,7 @@ class TestSandboxTerminalSessions:
             ).fetchone()
             sb_id = row["sandbox_id"]
 
-        client.delete("/api/tasks/sandbox-task/sandbox", headers=_auth(token))
+        client.delete("/api/tasks/hive/sandbox-task/sandbox", headers=_auth(token))
 
         with get_db_sync() as conn:
             n = conn.execute(
@@ -92,7 +92,7 @@ class TestSandboxTerminalSessions:
         _patch_daytona(monkeypatch)
         with pytest.raises(WebSocketDisconnect):
             with client.websocket_connect(
-                "/api/tasks/sandbox-task/sandbox/terminal/ws?ticket=not-a-valid-ticket"
+                "/api/tasks/hive/sandbox-task/sandbox/terminal/ws?ticket=not-a-valid-ticket"
             ):
                 pass
 
@@ -101,8 +101,8 @@ class TestSandboxTerminalSessions:
         token, _ = _create_user(client, "term-ws@test.com")
         _seed_task()
         _patch_daytona(monkeypatch)
-        client.post("/api/tasks/sandbox-task/sandbox", headers=_auth(token))
-        r = client.post("/api/tasks/sandbox-task/sandbox/sessions", headers=_auth(token), json={})
+        client.post("/api/tasks/hive/sandbox-task/sandbox", headers=_auth(token))
+        r = client.post("/api/tasks/hive/sandbox-task/sandbox/sessions", headers=_auth(token), json={})
         ticket = r.json()["ticket"]
 
         transport = MagicMock()
@@ -122,7 +122,7 @@ class TestSandboxTerminalSessions:
         chan.recv = recv_fn
 
         with client.websocket_connect(
-            f"/api/tasks/sandbox-task/sandbox/terminal/ws?ticket={ticket}"
+            f"/api/tasks/hive/sandbox-task/sandbox/terminal/ws?ticket={ticket}"
         ) as ws:
             ws.send_text(json.dumps({"type": "ping"}))
             msg = ws.receive_json()

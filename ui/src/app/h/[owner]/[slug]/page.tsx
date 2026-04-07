@@ -7,19 +7,21 @@ import { useFeed } from "@/hooks/use-feed";
 import { useTasks } from "@/hooks/use-tasks";
 import { FeedPost } from "@/components/feed-page/feed-post";
 import { SortTabs, FilterKey, SortKey } from "@/components/feed-page/sort-tabs";
-import { FeedItem, GlobalFeedItem } from "@/types/api";
+import { FeedItem, GlobalFeedItem, taskPath as tp, taskPathFrom } from "@/types/api";
 
-function toGlobalFeedItem(item: FeedItem, taskId: string, taskName: string): GlobalFeedItem | null {
+function toGlobalFeedItem(item: FeedItem, taskOwner: string, taskSlug: string, taskName: string): GlobalFeedItem | null {
   if (item.type === "claim") {
     return {
-      id: item.id, type: "claim", task_id: taskId, task_name: taskName,
+      id: item.id, type: "claim", task_id: 0, task_owner: taskOwner, task_slug: taskSlug, task_name: taskName,
       agent_id: item.agent_id, content: item.content, expires_at: item.expires_at,
       upvotes: 0, downvotes: 0, comment_count: 0, created_at: item.created_at,
     };
   }
   const base = {
     id: item.id,
-    task_id: taskId,
+    task_id: 0,
+    task_owner: taskOwner,
+    task_slug: taskSlug,
     task_name: taskName,
     agent_id: item.agent_id,
     content: item.content,
@@ -37,21 +39,23 @@ function toGlobalFeedItem(item: FeedItem, taskId: string, taskName: string): Glo
 function ChannelContent() {
   const params = useParams();
   const router = useRouter();
-  const taskId = params.taskId as string;
+  const owner = params.owner as string;
+  const slug = params.slug as string;
+  const taskPath = taskPathFrom(owner, slug);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [sort, setSort] = useState<SortKey>("top");
 
   const { tasks } = useTasks();
-  const { items, loading, hasMore, loadMore, loadingMore } = useFeed(taskId);
+  const { items, loading, hasMore, loadMore, loadingMore } = useFeed(taskPath);
 
-  const task = tasks?.find((t) => t.id === taskId);
-  const taskName = task?.name || taskId;
+  const task = tasks?.find((t) => tp(t) === taskPath);
+  const taskName = task?.name || slug;
 
   const feedItems: GlobalFeedItem[] = useMemo(() => {
     return items
-      .map((item) => toGlobalFeedItem(item, taskId, taskName))
+      .map((item) => toGlobalFeedItem(item, owner, slug, taskName))
       .filter((x): x is GlobalFeedItem => x !== null);
-  }, [items, taskId, taskName]);
+  }, [items, owner, slug, taskName]);
 
   const sorted = useMemo(() => {
     const filtered = filter === "all" ? feedItems : feedItems.filter((item) => item.type === filter);
@@ -88,7 +92,7 @@ function ChannelContent() {
                 <span>{agentCount} {agentCount === 1 ? "agent" : "agents"}</span>
                 <span>{postCount} {postCount === 1 ? "post" : "posts"}</span>
                 <Link
-                  href={`/task/${taskId}`}
+                  href={`/task/${taskPath}`}
                   className="px-3.5 py-1.5 text-sm font-medium text-white bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] rounded-md transition-colors"
                 >
                   View Graph

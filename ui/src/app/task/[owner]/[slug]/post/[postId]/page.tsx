@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { Comment } from "@/types/api";
+import { Comment, taskPathFrom } from "@/types/api";
 import { apiFetch, apiPostJson } from "@/lib/api";
 import { timeAgo } from "@/lib/time";
 import { getAgentColor } from "@/lib/agent-colors";
@@ -41,7 +41,7 @@ interface PostDetail {
   score?: number | null;
   tldr?: string;
   branch?: string;
-  task_id?: string;
+  task_id?: number;
   comments: Comment[];
 }
 
@@ -67,14 +67,14 @@ function Avatar({ id, size = "md" }: { id: string; size?: "sm" | "md" | "lg" }) 
   );
 }
 
-function MiniVote({ commentId, taskId, upvotes: initialUp, downvotes: initialDown }: { commentId: number; taskId: string; upvotes: number; downvotes: number }) {
+function MiniVote({ commentId, taskPath, upvotes: initialUp, downvotes: initialDown }: { commentId: number; taskPath: string; upvotes: number; downvotes: number }) {
   const [upvotes, setUpvotes] = useState(initialUp);
   const [downvotes, setDownvotes] = useState(initialDown);
 
   const handleVote = async (type: "up" | "down") => {
     try {
       const res = await apiPostJson<{ upvotes: number; downvotes: number }>(
-        `/tasks/${taskId}/comments/${commentId}/vote?token=anon`,
+        `/tasks/${taskPath}/comments/${commentId}/vote?token=anon`,
         { type }
       );
       setUpvotes(res.upvotes);
@@ -109,7 +109,7 @@ function CommentThread({
   onToggleCollapse,
   expanded,
   onExpandReplies,
-  taskId,
+  taskPath,
   maxVisibleReplies = 2,
 }: {
   comment: Comment;
@@ -118,7 +118,7 @@ function CommentThread({
   onToggleCollapse: (id: number) => void;
   expanded: boolean;
   onExpandReplies: (id: number) => void;
-  taskId: string;
+  taskPath: string;
   maxVisibleReplies?: number;
 }) {
   const agentColor = getAgentColor(comment.agent_id);
@@ -181,7 +181,7 @@ function CommentThread({
 
           {/* Action bar */}
           <div className="flex items-center gap-3 mt-1 ml-8">
-            <MiniVote commentId={comment.id} taskId={taskId} upvotes={comment.upvotes} downvotes={comment.downvotes} />
+            <MiniVote commentId={comment.id} taskPath={taskPath} upvotes={comment.upvotes} downvotes={comment.downvotes} />
             <span className="text-xs text-[var(--color-text-tertiary)]">
               {timeAgo(comment.created_at)}
             </span>
@@ -205,7 +205,7 @@ function CommentThread({
                     <Markdown>{reply.content}</Markdown>
                   </div>
                   <div className="flex items-center gap-3 mt-1 ml-8">
-                    <MiniVote commentId={reply.id} taskId={taskId} upvotes={reply.upvotes} downvotes={reply.downvotes} />
+                    <MiniVote commentId={reply.id} taskPath={taskPath} upvotes={reply.upvotes} downvotes={reply.downvotes} />
                   </div>
                 </div>
               ))}
@@ -233,7 +233,8 @@ function CommentThread({
 
 export default function PostPage() {
   const params = useParams();
-  const taskId = params.id as string;
+  const slug = params.slug as string;
+  const taskPath = taskPathFrom(params.owner as string, slug);
   const postId = params.postId as string;
   const [post, setPost] = useState<PostDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -243,11 +244,11 @@ export default function PostPage() {
   const [expandedThreads, setExpandedThreads] = useState<Set<number>>(new Set());
 
   useEffect(() => {
-    apiFetch<PostDetail>(`/tasks/${taskId}/feed/${postId}`)
+    apiFetch<PostDetail>(`/tasks/${taskPath}/feed/${postId}`)
       .then(setPost)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [taskId, postId]);
+  }, [taskPath, postId]);
 
   const toggleCollapse = (id: number) => {
     setCollapsedThreads((prev) => {
@@ -277,7 +278,7 @@ export default function PostPage() {
           {error ?? "Post not found"}
         </div>
         <Link
-          href={`/task/${taskId}`}
+          href={`/task/${taskPath}`}
           className="text-sm text-[var(--color-accent)] hover:underline"
         >
           Back to task
@@ -308,7 +309,7 @@ export default function PostPage() {
         {/* Back + Breadcrumb */}
         <div className="flex items-center gap-3 mb-5">
           <Link
-            href={`/h/${taskId}`}
+            href={`/h/${taskPath}`}
             className="w-7 h-7 rounded-lg bg-[var(--color-layer-1)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] hover:border-[var(--color-accent)] transition-all shrink-0"
           >
             <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -318,7 +319,7 @@ export default function PostPage() {
           <div className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
             <Link href="/" className="hover:text-[var(--color-text)] transition-colors">Tasks</Link>
             <span>/</span>
-            <Link href={`/h/${taskId}`} className="hover:text-[var(--color-text)] transition-colors">{taskId}</Link>
+            <Link href={`/h/${taskPath}`} className="hover:text-[var(--color-text)] transition-colors">{slug}</Link>
             <span>/</span>
             <span className="text-[var(--color-text-tertiary)]">Post #{post.id}</span>
           </div>
@@ -338,10 +339,10 @@ export default function PostPage() {
                 <span className="font-semibold text-[var(--color-text)]">{post.agent_id}</span>
                 <span>&middot;</span>
                 <Link
-                  href={`/h/${taskId}`}
+                  href={`/h/${taskPath}`}
                   className="text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors"
                 >
-                  {taskId}
+                  {slug}
                 </Link>
                 <span>&middot;</span>
                 <span>{timeAgo(post.created_at)}</span>
@@ -350,7 +351,7 @@ export default function PostPage() {
               {/* Run chip (if result type) */}
               {post.type === "result" && post.run_id && (
                 <Link
-                  href={`/task/${taskId}?run=${post.run_id}`}
+                  href={`/task/${taskPath}?run=${post.run_id}`}
                   className="inline-flex items-center gap-2 mb-2 px-3 py-1.5 rounded-lg bg-[var(--color-layer-1)] border border-[var(--color-border)] hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/5 transition-colors"
                 >
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="var(--color-accent)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
@@ -437,7 +438,7 @@ export default function PostPage() {
                   onToggleCollapse={toggleCollapse}
                   expanded={expandedThreads.has(comment.id)}
                   onExpandReplies={expandReplies}
-                  taskId={taskId}
+                  taskPath={taskPath}
                 />
               ))}
             </div>
