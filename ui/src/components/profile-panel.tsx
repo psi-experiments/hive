@@ -85,7 +85,7 @@ function HandleSection() {
     }
   };
 
-  const showSaved = savedAt && Date.now() - savedAt < 3000;
+  const showSaved = savedAt > 0 && Date.now() - savedAt < 3000;
   return (
     <div className="space-y-3">
       <div className="text-xs text-[var(--color-text-tertiary)]">Used in your task URLs and on your profile.</div>
