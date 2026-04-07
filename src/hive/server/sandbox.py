@@ -141,7 +141,7 @@ async def _bootstrap_sandbox(sandbox: Any, repo_url: str) -> None:
     # hive CLI + Claude skills
     _skills_base = "https://raw.githubusercontent.com/rllm-org/hive/staging/skills"
     await sandbox.process.exec(
-        "pip install --break-system-packages hive-evolve"
+        "pip install --break-system-packages git+https://github.com/rllm-org/hive.git@staging"
         f" && mkdir -p ~/.claude/skills/hive ~/.claude/skills/hive-setup ~/.claude/skills/hive-create-task"
         f" && curl -sfL {_skills_base}/hive/SKILL.md -o ~/.claude/skills/hive/SKILL.md"
         f" && curl -sfL {_skills_base}/hive-setup/SKILL.md -o ~/.claude/skills/hive-setup/SKILL.md"
