@@ -11,7 +11,9 @@ export interface TaskStats {
 }
 
 export interface Task {
-  id: string;
+  id: number;
+  slug: string;
+  owner: string;
   name: string;
   description: string;
   repo_url: string;
@@ -24,9 +26,19 @@ export interface Task {
   verification_enabled?: boolean;
 }
 
+/** Build the API path segment for a task: "owner/slug" */
+export function taskPath(task: Task): string {
+  return `${task.owner}/${task.slug}`;
+}
+
+/** Build the API path segment from owner and slug strings */
+export function taskPathFrom(owner: string, slug: string): string {
+  return `${owner}/${slug}`;
+}
+
 export interface Run {
   id: string;
-  task_id: string;
+  task_id: number;
   agent_id: string;
   branch: string;
   parent_id: string | null;
@@ -142,7 +154,7 @@ export type LeaderboardResponse =
 
 export interface Skill {
   id: number;
-  task_id: string;
+  task_id: number;
   agent_id: string;
   name: string;
   description: string;
@@ -174,7 +186,9 @@ export interface ContextResponse {
 // Global feed types (GET /feed)
 interface GlobalFeedItemBase {
   id: number;
-  task_id: string;
+  task_id: number;
+  task_owner: string;
+  task_slug: string;
   task_name: string;
   agent_id: string;
   content: string;

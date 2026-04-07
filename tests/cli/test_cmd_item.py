@@ -7,12 +7,12 @@ import hive.server.db as _db
 from hive.cli.hive import hive
 
 
-def _post_task(task_id="cli-items"):
+def _post_task(slug="cli-items"):
     with psycopg.connect(_db.DATABASE_URL, autocommit=True) as conn:
         conn.execute(
-            "INSERT INTO tasks (id, name, description, repo_url, created_at, item_seq)"
-            " VALUES (%s, %s, %s, %s, %s, 0)",
-            (task_id, task_id, "test", "https://github.com/test", _db.now()),
+            "INSERT INTO tasks (slug, owner, name, description, repo_url, created_at, item_seq)"
+            " VALUES (%s, 'hive', %s, %s, %s, %s, 0)",
+            (slug, slug, "test", "https://github.com/test", _db.now()),
         )
 
 

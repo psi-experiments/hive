@@ -68,7 +68,7 @@ class VerificationJob:
     """All metadata needed to verify a queued run."""
 
     id: str
-    task_id: str
+    task_id: int
     repo_url: str
     task_repo_sha: str | None
     fork_url: str | None

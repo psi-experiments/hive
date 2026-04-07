@@ -33,6 +33,98 @@ interface ProfileData {
 
 type ProfileTab = "tasks" | "agents" | "settings";
 
+function HandleSection() {
+  const { user, checkHandleAvailable, updateHandle } = useAuth();
+  const [value, setValue] = useState(user?.handle ?? "");
+  const [status, setStatus] = useState<"idle" | "checking" | "available" | "taken" | "invalid">("idle");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState(0);
+
+  useEffect(() => { setValue(user?.handle ?? ""); }, [user?.handle]);
+
+  useEffect(() => {
+    if (!value || value === user?.handle) {
+      setStatus("idle");
+      setReason("");
+      return;
+    }
+    setStatus("checking");
+    const t = setTimeout(async () => {
+      try {
+        const result = await checkHandleAvailable(value);
+        if (result.available) {
+          setStatus("available");
+          setReason("");
+        } else if (result.reason) {
+          setStatus("invalid");
+          setReason(result.reason);
+        } else {
+          setStatus("taken");
+          setReason("already taken");
+        }
+      } catch {
+        setStatus("idle");
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [value, user?.handle, checkHandleAvailable]);
+
+  const handleSave = async () => {
+    if (status !== "available") return;
+    setSaving(true);
+    try {
+      await updateHandle(value);
+      setSavedAt(Date.now());
+      setStatus("idle");
+    } catch (err) {
+      setReason(err instanceof Error ? err.message : "save failed");
+      setStatus("invalid");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const showSaved = savedAt && Date.now() - savedAt < 3000;
+  return (
+    <div className="space-y-3">
+      <div className="text-xs text-[var(--color-text-tertiary)]">Used in your task URLs and on your profile.</div>
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <input
+            type="text"
+            value={value}
+            onChange={(e) => setValue(e.target.value.toLowerCase())}
+            minLength={2}
+            maxLength={20}
+            placeholder="alice"
+            className="w-full px-3 py-2 text-sm border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] outline-none"
+            style={{ outline: "none", boxShadow: "none" }}
+          />
+          {status === "checking" && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[var(--color-text-tertiary)]">…</span>}
+          {status === "available" && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-emerald-500">✓</span>}
+          {(status === "taken" || status === "invalid") && <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-red-500">✗</span>}
+        </div>
+        <button
+          onClick={handleSave}
+          disabled={saving || status !== "available"}
+          className="px-4 py-2 text-sm font-medium border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text)] hover:bg-[var(--color-layer-1)] disabled:opacity-50 transition-colors"
+        >
+          {saving ? "..." : "Save"}
+        </button>
+      </div>
+      {reason ? (
+        <p className="text-xs text-red-500">{reason}</p>
+      ) : showSaved ? (
+        <p className="text-xs text-emerald-500">Saved.</p>
+      ) : (
+        <p className="text-xs text-[var(--color-text-tertiary)]">Current: /task/{user?.handle ?? ""}/...</p>
+      )}
+    </div>
+  );
+}
+
+
 function ApiKeySection() {
   const [prefix, setPrefix] = useState<string | null>(null);
   const [newKey, setNewKey] = useState<string | null>(null);
@@ -310,7 +402,7 @@ export function ProfilePanel() {
                     Add task
                   </button>
                 </div>
-                <TaskExplorer title={null} tasks={myTasks} showFeed={true} linkPrefix="/me" ownerName={profile?.github_username ?? user.email} ownerAvatar={profile?.avatar_url ?? user.avatar_url} />
+                <TaskExplorer title={null} tasks={myTasks} showFeed={true} ownerName={profile?.github_username ?? user.email} ownerAvatar={profile?.avatar_url ?? user.avatar_url} />
               </>
             )}
           </div>
@@ -368,6 +460,14 @@ export function ProfilePanel() {
 
         {tab === "settings" && (
           <div className="space-y-6">
+            {/* Profile */}
+            <div>
+              <h3 className="text-base font-medium text-[var(--color-text)] mb-4">Profile</h3>
+              <div className="bg-[var(--color-surface)] border border-[var(--color-border)] px-5 py-4">
+                <HandleSection />
+              </div>
+            </div>
+
             {/* Appearance */}
             <div>
               <h3 className="text-base font-medium text-[var(--color-text)] mb-4">Appearance</h3>

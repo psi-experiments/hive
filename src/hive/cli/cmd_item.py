@@ -6,7 +6,7 @@ import typer
 
 from hive.cli.console import get_console
 from hive.cli.formatting import ok, empty, relative_time
-from hive.cli.helpers import _api, _task_id, _json_out, _server_url, _active_agent, _agent_id
+from hive.cli.helpers import _api, _task_ref, _split_task_ref, _json_out, _server_url, _active_agent, _agent_id
 from hive.cli.state import _set_task, get_task, TaskOpt, JsonFlag
 
 item_app = typer.Typer(no_args_is_help=True)
@@ -19,7 +19,8 @@ def item_callback(task_opt: TaskOpt = None):
 
 
 def _list_items_data(
-    task_id: str,
+    owner: str,
+    slug: str,
     *,
     status: Optional[str] = None,
     priority: Optional[str] = None,
@@ -41,7 +42,7 @@ def _list_items_data(
         params["label"] = label
     if parent is not None:
         params["parent"] = parent
-    return _api("GET", f"/tasks/{task_id}/items", params=params)
+    return _api("GET", f"/tasks/{owner}/{slug}/items", params=params)
 
 
 def _print_items(data, *, page: int):
@@ -85,7 +86,8 @@ def item_create(
 ):
     """Create a new work item."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
     payload = {"title": title, "status": status, "priority": priority}
     if description is not None:
         payload["description"] = description
@@ -101,7 +103,7 @@ def item_create(
             payload["metadata"] = _json.loads(metadata)
         except _json.JSONDecodeError:
             raise click.ClickException("--metadata must be valid JSON")
-    data = _api("POST", f"/tasks/{task_id}/items", json=payload)
+    data = _api("POST", f"/tasks/{owner}/{slug}/items", json=payload)
     if as_json:
         _json_out(data)
     else:
@@ -124,9 +126,10 @@ def item_list(
 ):
     """List work items."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
     data = _list_items_data(
-        task_id,
+        owner, slug,
         status=status,
         priority=priority,
         assignee=assignee,
@@ -156,9 +159,10 @@ def item_mine(
 ):
     """List items assigned to the current agent."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
     data = _list_items_data(
-        task_id,
+        owner, slug,
         status=status,
         priority=priority,
         assignee=_agent_id(),
@@ -182,10 +186,11 @@ def item_view(
 ):
     """View a work item."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
-    data = _api("GET", f"/tasks/{task_id}/items/{item_id}")
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
+    data = _api("GET", f"/tasks/{owner}/{slug}/items/{item_id}")
     try:
-        comments_data = _api("GET", f"/tasks/{task_id}/items/{item_id}/comments", params={"per_page": 100})
+        comments_data = _api("GET", f"/tasks/{owner}/{slug}/items/{item_id}/comments", params={"per_page": 100})
         comments = comments_data.get("comments", comments_data) if isinstance(comments_data, dict) else comments_data
     except click.ClickException:
         comments = []
@@ -249,7 +254,8 @@ def item_update(
 ):
     """Update a work item."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
     payload = {}
     if title is not None:
         payload["title"] = title
@@ -273,7 +279,7 @@ def item_update(
             raise click.ClickException("--metadata must be valid JSON")
     if not payload:
         raise click.ClickException("No fields to update.")
-    data = _api("PATCH", f"/tasks/{task_id}/items/{item_id}", json=payload)
+    data = _api("PATCH", f"/tasks/{owner}/{slug}/items/{item_id}", json=payload)
     if as_json:
         _json_out(data)
     else:
@@ -289,8 +295,9 @@ def item_assign(
 ):
     """Assign item to current agent."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
-    data = _api("POST", f"/tasks/{task_id}/items/{item_id}/assign")
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
+    data = _api("POST", f"/tasks/{owner}/{slug}/items/{item_id}/assign")
     if as_json:
         _json_out(data)
     else:
@@ -306,8 +313,9 @@ def item_delete(
 ):
     """Delete a work item."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
-    url = _server_url().rstrip("/") + f"/api/tasks/{task_id}/items/{item_id}"
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
+    url = _server_url().rstrip("/") + f"/api/tasks/{owner}/{slug}/items/{item_id}"
     try:
         agent = _active_agent()
         token = agent.get("token", "")
@@ -336,8 +344,9 @@ def item_comment(
 ):
     """Add a comment to a work item."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
-    data = _api("POST", f"/tasks/{task_id}/items/{item_id}/comments", json={"content": text})
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
+    data = _api("POST", f"/tasks/{owner}/{slug}/items/{item_id}/comments", json={"content": text})
     if as_json:
         _json_out(data)
     else:
@@ -354,10 +363,11 @@ def item_uncomment(
 ):
     """Delete a comment from a work item."""
     _set_task(task_opt)
-    task_id = _task_id(get_task())
+    ref = _task_ref(get_task())
+    owner, slug = _split_task_ref(ref)
     from hive.cli.helpers import _server_url, _active_agent
     import httpx
-    url = _server_url().rstrip("/") + f"/api/tasks/{task_id}/items/{item_id}/comments/{comment_id}"
+    url = _server_url().rstrip("/") + f"/api/tasks/{owner}/{slug}/items/{item_id}/comments/{comment_id}"
     try:
         agent = _active_agent()
         token = agent.get("token", "")

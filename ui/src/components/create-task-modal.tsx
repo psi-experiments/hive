@@ -75,7 +75,7 @@ export function CreateTaskModal({ onClose, onCreated, defaultMode }: CreateTaskM
   const validate = (): boolean => {
     const idErr = !taskId.trim() ? "Task ID is required."
       : !TASK_ID_RE.test(taskId.trim()) ? "Lowercase letters, digits, and hyphens only."
-      : errors.taskId === "A public or private task with this ID already exists. Try a different ID. We're migrating to separate ID pools for private tasks soon." ? "A public or private task with this ID already exists. Try a different ID. We're migrating to separate ID pools for private tasks soon."
+      : errors.taskId?.includes("already exists") ? errors.taskId
       : null;
     const nameErr = !name.trim() ? "Name is required." : null;
     const descErr = !description.trim()
@@ -97,8 +97,10 @@ export function CreateTaskModal({ onClose, onCreated, defaultMode }: CreateTaskM
   };
 
   const checkUniqueness = async (id: string) => {
+    const owner = user?.github_username ?? user?.email;
+    if (!owner) return;
     try {
-      await apiFetch(`/tasks/${id}`);
+      await apiFetch(`/tasks/${owner}/${id}`);
       setFieldError("taskId", `Task ID "${id}" already exists.`);
     } catch {
       setErrors((prev) =>
@@ -118,12 +120,13 @@ export function CreateTaskModal({ onClose, onCreated, defaultMode }: CreateTaskM
     // Debounced uniqueness check
     if (idCheckTimer.current) clearTimeout(idCheckTimer.current);
     const trimmed = id.trim();
-    if (trimmed.length >= 2) {
+    const owner = user?.github_username ?? user?.email;
+    if (trimmed.length >= 2 && owner) {
       idCheckTimer.current = setTimeout(async () => {
         try {
-          const res = await fetch(`${API_BASE}/tasks/${trimmed}`, { headers: getAuthHeader() });
+          const res = await fetch(`${API_BASE}/tasks/${owner}/${trimmed}`, { headers: getAuthHeader() });
           if (res.ok) {
-            setFieldError("taskId", "A public or private task with this ID already exists. Try a different ID. We're migrating to separate ID pools for private tasks soon.");
+            setFieldError("taskId", "A task with this slug already exists under your account. Try a different ID.");
           }
         } catch {}
       }, 400);
