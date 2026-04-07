@@ -95,22 +95,32 @@ export function XtermPane({ storeKey, active, onDisconnected }: XtermPaneProps) 
     termRef.current = term;
     fitRef.current = fit;
 
-    // Batch incoming writes — collect chunks and flush once per animation frame
+    // Write immediately for snappy typing, but coalesce during bursts.
+    // If a second message arrives within the same frame, batch the rest.
     let writeBuf = "";
     let writeRaf: number | null = null;
 
     const flushWrites = () => {
       writeRaf = null;
       if (writeBuf) {
-        term.write(writeBuf);
-        detectUrls(writeBuf);
+        const batch = writeBuf;
         writeBuf = "";
+        term.write(batch);
+        detectUrls(batch);
       }
     };
 
-    const queueWrite = (text: string) => {
-      writeBuf += text;
-      if (!writeRaf) writeRaf = requestAnimationFrame(flushWrites);
+    const writeText = (text: string) => {
+      if (!writeRaf) {
+        // First message this frame — write immediately, no delay
+        term.write(text);
+        detectUrls(text);
+        // Set a sentinel RAF so subsequent messages in this frame get batched
+        writeRaf = requestAnimationFrame(flushWrites);
+      } else {
+        // Burst mode — accumulate until next frame
+        writeBuf += text;
+      }
     };
 
     // URL detection — only keep last 2KB, run regex after 500ms idle
@@ -134,11 +144,11 @@ export function XtermPane({ storeKey, active, onDisconnected }: XtermPaneProps) 
 
     const writeLiveMsg = (msg: store.TerminalMessage) => {
       if (msg.type === "output" && "data" in msg) {
-        queueWrite(decodeOutput(msg.data));
+        writeText(decodeOutput(msg.data));
       } else if (msg.type === "error" && "message" in msg) {
-        queueWrite(`\r\n\x1b[31m${msg.message}\x1b[0m\r\n`);
+        writeText(`\r\n\x1b[31m${msg.message}\x1b[0m\r\n`);
       } else if (msg.type === "exit") {
-        queueWrite(`\r\n\x1b[90m[Session ended]\x1b[0m\r\n`);
+        writeText(`\r\n\x1b[90m[Session ended]\x1b[0m\r\n`);
         onDisconnectedRef.current();
       }
     };
