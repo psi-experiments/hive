@@ -380,7 +380,7 @@ async def terminal_websocket(
         _pool_put(session_id, ssh)
 
     chan = ssh.chan
-    chan.settimeout(0.25)
+    chan.settimeout(0.02)
     ssh.stop_ev.clear()
     ssh.last_ws_time = _time.monotonic()
 
