@@ -213,11 +213,20 @@ export function XtermPane({ storeKey, active, onDisconnected }: XtermPaneProps) 
   }, [storeKey]);
 
   useEffect(() => {
-    if (active && termRef.current && fitRef.current && containerRef.current) {
-      try { fitRef.current.fit(); } catch { /* ignore */ }
-      termRef.current.focus();
-    }
-  }, [active]);
+    if (!active || !termRef.current || !fitRef.current || !containerRef.current) return;
+    const term = termRef.current;
+    const fit = fitRef.current;
+    // Fit immediately, then refit after layout settles
+    try { fit.fit(); } catch { /* ignore */ }
+    term.focus();
+    const t = setTimeout(() => {
+      try { fit.fit(); } catch { /* ignore */ }
+      if (term.cols && term.rows) {
+        store.sendResize(storeKey, term.cols, term.rows);
+      }
+    }, 150);
+    return () => clearTimeout(t);
+  }, [active, storeKey]);
 
   return (
     <div className="h-full flex flex-col">
