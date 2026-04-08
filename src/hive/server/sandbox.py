@@ -138,10 +138,10 @@ async def _bootstrap_sandbox(sandbox: Any, repo_url: str) -> None:
         cwd="/home/daytona",
         timeout=SANDBOX_BOOTSTRAP_TIMEOUT,
     )
-    # opencode — installer puts binary in ~/.opencode/bin, symlink to /usr/local/bin
+    # opencode
     await sandbox.process.exec(
-        "curl -fsSL https://opencode.ai/install | bash"
-        " && ln -sf /home/daytona/.opencode/bin/opencode /usr/local/bin/opencode",
+        "export NVM_DIR=/usr/local/share/nvm && . $NVM_DIR/nvm.sh 2>/dev/null;"
+        " npm install -g opencode",
         cwd="/home/daytona",
         timeout=SANDBOX_BOOTSTRAP_TIMEOUT,
     )
