@@ -141,7 +141,7 @@ async def _bootstrap_sandbox(sandbox: Any, repo_url: str) -> None:
     # opencode
     await sandbox.process.exec(
         "export NVM_DIR=/usr/local/share/nvm && . $NVM_DIR/nvm.sh 2>/dev/null;"
-        " npm install -g opencode",
+        " npm install -g opencode-ai",
         cwd="/home/daytona",
         timeout=SANDBOX_BOOTSTRAP_TIMEOUT,
     )
