@@ -146,7 +146,7 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
               </div>
             </div>
 
-            <div className="flex-1 min-h-0 bg-[#1a1b26] overflow-hidden">
+            <div className="flex-1 min-h-0 bg-[#1a1b26] overflow-hidden relative">
               {tabs.length === 0 && detachedSessions.length > 0 && (
                 <div className="px-4 py-4 space-y-2 font-[family-name:var(--font-ibm-plex-mono)]">
                   <p className="text-[11px] uppercase tracking-wider text-[#7a82a8]">
@@ -184,8 +184,8 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
               {tabs.map((tab) => (
                 <div
                   key={tab.key}
-                  className="h-full min-h-0"
-                  style={{ display: activeKey === tab.key ? "block" : "none" }}
+                  className="absolute inset-0"
+                  style={{ visibility: activeKey === tab.key ? "visible" : "hidden" }}
                 >
                   <XtermPane
                     storeKey={tab.storeKey}
