@@ -753,40 +753,6 @@ export function MessageInput({
 
 /* ─────────────── EditMessageInline component ─────────────── */
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Convert a plain-text message + its validated mentions list into Tiptap-compatible HTML.
- * Each `@<id>` substring matching a mention becomes a mention node span; everything else is plain text.
- */
-function textToEditorHTML(text: string, mentions: string[]): string {
-  const escapeAndBreak = (s: string) => escapeHtml(s).replace(/\n/g, "<br>");
-  if (!mentions.length) return `<p>${escapeAndBreak(text)}</p>`;
-  const pattern = new RegExp(`@(${mentions.map(escapeRegex).join("|")})\\b`, "gi");
-  let inner = "";
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = pattern.exec(text)) !== null) {
-    if (m.index > last) inner += escapeAndBreak(text.slice(last, m.index));
-    const id = m[1].toLowerCase();
-    inner += `<span data-type="mention" data-id="${id}" class="hive-mention-pill">@${id}</span>`;
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) inner += escapeAndBreak(text.slice(last));
-  return `<p>${inner}</p>`;
-}
-
 interface EditMessageInlineProps {
   initialText: string;
   initialMentions: string[];
@@ -795,6 +761,12 @@ interface EditMessageInlineProps {
 }
 
 export function EditMessageInline({ initialText, initialMentions, onSave, onCancel }: EditMessageInlineProps) {
+  // initialMentions is intentionally unused — tiptap-markdown's parser handles
+  // bold/italic/code/lists/quotes/links from the raw markdown, but mentions
+  // will appear as plain @<name> text in the edit view (not as pills). On save
+  // the text round-trips correctly via the markdown serializer, so functionality
+  // is preserved; only the in-edit visual differs from the rendered message.
+  void initialMentions;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const savingRef = useRef(false);
@@ -803,7 +775,7 @@ export function EditMessageInline({ initialText, initialMentions, onSave, onCanc
 
   const editor = useChatEditor({
     placeholder: "Edit message...",
-    initialContent: textToEditorHTML(initialText, initialMentions),
+    initialContent: initialText,
     onSubmit: () => saveRef.current(),
   });
 
