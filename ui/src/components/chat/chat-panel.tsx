@@ -776,11 +776,13 @@ function MentionPill({
 
 function ThreadAvatars({ participants }: { participants: ThreadParticipant[] }) {
   // Defensive: an older cached server response may have used `string[]` instead of objects.
-  // Normalize each entry so the render path always sees {kind, name}.
+  // Normalize each entry so the render path always sees {kind, name, avatar_url}.
   const normalized: ThreadParticipant[] = (participants ?? [])
     .map((p) => {
-      if (typeof p === "string") return { kind: "agent" as const, name: p };
-      if (p && typeof p === "object" && typeof p.name === "string") return p;
+      if (typeof p === "string") return { kind: "agent" as const, name: p, avatar_url: null };
+      if (p && typeof p === "object" && typeof p.name === "string") {
+        return { kind: p.kind, name: p.name, avatar_url: p.avatar_url ?? null };
+      }
       return null;
     })
     .filter((p): p is ThreadParticipant => p !== null);
@@ -790,6 +792,18 @@ function ThreadAvatars({ participants }: { participants: ThreadParticipant[] }) 
     <span className="flex items-center -space-x-1">
       {visible.map((p) => {
         const radius = p.kind === "user" ? "rounded-full" : "rounded";
+        if (p.avatar_url) {
+          return (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={`${p.kind}:${p.name}`}
+              src={p.avatar_url}
+              alt={p.name}
+              className={`w-5 h-5 ${radius} object-cover ring-1 ring-[var(--color-surface)]`}
+              title={p.name}
+            />
+          );
+        }
         return (
           <span
             key={`${p.kind}:${p.name}`}

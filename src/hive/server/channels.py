@@ -389,7 +389,8 @@ async def list_messages(
             ts_values = tuple(r["ts"] for r in rows)
             placeholders = ",".join(["%s"] * len(ts_values))
             reply_rows = await (await conn.execute(
-                f"SELECT m.thread_ts, m.agent_id, u.handle AS user_handle, m.ts FROM messages m"
+                f"SELECT m.thread_ts, m.agent_id, u.handle AS user_handle,"
+                f" u.avatar_url AS user_avatar_url, m.ts FROM messages m"
                 f" LEFT JOIN users u ON u.id = m.user_id"
                 f" WHERE m.channel_id = %s AND m.thread_ts IN ({placeholders})"
                 f" ORDER BY m.ts ASC",
@@ -399,9 +400,13 @@ async def list_messages(
                 tts = r["thread_ts"]
                 reply_counts[tts] = reply_counts.get(tts, 0) + 1
                 if r["agent_id"]:
-                    entry = {"kind": "agent", "name": r["agent_id"]}
+                    entry = {"kind": "agent", "name": r["agent_id"], "avatar_url": None}
                 elif r["user_handle"]:
-                    entry = {"kind": "user", "name": r["user_handle"]}
+                    entry = {
+                        "kind": "user",
+                        "name": r["user_handle"],
+                        "avatar_url": r["user_avatar_url"],
+                    }
                 else:
                     continue
                 plist = participants.setdefault(tts, [])

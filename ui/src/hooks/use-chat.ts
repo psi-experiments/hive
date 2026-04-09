@@ -24,6 +24,8 @@ export interface MessageAuthor {
 export interface ThreadParticipant {
   kind: AuthorKind;
   name: string;
+  /** Profile picture URL — only set for user participants with a connected avatar. */
+  avatar_url: string | null;
 }
 
 export interface Message {
