@@ -29,6 +29,7 @@ from .verification import (
     recompute_task_stats,
     verification_config_from_raw,
 )
+from .channels import _ensure_default_channels
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 JWT_SECRET = os.environ.get("JWT_SECRET", "hive-dev-secret-change-me")
@@ -941,6 +942,73 @@ async def register(body: dict[str, Any] = {}):
     return JSONResponse({"id": agent_id, "token": agent_token, "registered_at": ts}, status_code=201)
 
 
+@router.get("/agents")
+async def list_agents(q: str | None = Query(None), limit: int = Query(50)):
+    """Public list of agents, lightweight fields for autocomplete."""
+    limit = max(1, min(200, limit))
+    async with get_db() as conn:
+        if q:
+            rows = await (await conn.execute(
+                "SELECT a.id, a.total_runs, u.handle AS owner_handle FROM agents a"
+                " LEFT JOIN users u ON u.id = a.user_id"
+                " WHERE a.id ILIKE %s ORDER BY a.total_runs DESC, a.id ASC LIMIT %s",
+                (f"%{q}%", limit),
+            )).fetchall()
+        else:
+            rows = await (await conn.execute(
+                "SELECT a.id, a.total_runs, u.handle AS owner_handle FROM agents a"
+                " LEFT JOIN users u ON u.id = a.user_id"
+                " ORDER BY a.total_runs DESC, a.id ASC LIMIT %s",
+                (limit,),
+            )).fetchall()
+    return JSONResponse({"agents": [
+        {"id": r["id"], "total_runs": r["total_runs"], "owner_handle": r["owner_handle"]}
+        for r in rows
+    ]})
+
+
+@router.get("/agents/{agent_id}")
+async def get_agent_profile(agent_id: str):
+    """Public agent profile: identity, timestamps, total runs, and owner handle if claimed."""
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT a.id, a.registered_at, a.last_seen_at, a.total_runs, u.handle AS owner_handle"
+            " FROM agents a LEFT JOIN users u ON u.id = a.user_id"
+            " WHERE a.id = %s",
+            (agent_id,),
+        )).fetchone()
+    if not row:
+        raise HTTPException(404, "agent not found")
+    return JSONResponse({
+        "id": row["id"],
+        "registered_at": row["registered_at"],
+        "last_seen_at": row["last_seen_at"],
+        "total_runs": row["total_runs"],
+        "owner_handle": row["owner_handle"],
+    })
+
+
+@router.get("/users/{handle}")
+async def get_user_profile(handle: str):
+    """Public user profile by handle: identity, joined date, agent count."""
+    async with get_db() as conn:
+        row = await (await conn.execute(
+            "SELECT u.id, u.handle, u.avatar_url, u.created_at,"
+            " (SELECT COUNT(*) FROM agents WHERE user_id = u.id) AS agent_count"
+            " FROM users u WHERE u.handle = %s",
+            (handle,),
+        )).fetchone()
+    if not row:
+        raise HTTPException(404, "user not found")
+    return JSONResponse({
+        "id": row["id"],
+        "handle": row["handle"],
+        "avatar_url": row["avatar_url"],
+        "created_at": row["created_at"],
+        "agent_count": row["agent_count"],
+    })
+
+
 @router.post("/register/batch", status_code=201)
 async def register_batch(body: dict[str, Any] = {}):
     count = body.get("count", 1)
@@ -1107,6 +1175,7 @@ async def create_task(
             " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (slug, PLATFORM_OWNER, name, description, repo_url, normalized_config, now()),
         )).fetchone()
+        await _ensure_default_channels(row["id"], None, conn)
     return JSONResponse({"id": row["id"], "slug": slug, "owner": PLATFORM_OWNER, "name": name, "repo_url": repo_url, "status": "active"}, status_code=201)
 
 
@@ -1196,6 +1265,7 @@ async def create_private_task(body: dict[str, Any], user: dict = Depends(require
             " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (slug, task_owner, task_name, description, repo_url, "private", user_id, "private", repo_full_name, installation_id, now()),
         )).fetchone()
+        await _ensure_default_channels(row["id"], None, conn)
     resp_body: dict[str, Any] = {
         "id": row["id"], "slug": slug, "owner": task_owner,
         "name": task_name, "repo_url": repo_url,
@@ -2676,6 +2746,9 @@ app.include_router(router)
 
 from .items import router as items_router
 app.include_router(items_router)
+
+from .channels import router as channels_router
+app.include_router(channels_router)
 
 from .sandbox import router as sandbox_router
 app.include_router(sandbox_router)

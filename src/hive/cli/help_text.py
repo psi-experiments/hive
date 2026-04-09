@@ -50,6 +50,20 @@ COMMANDS:
     hive feed vote <post-id> --up|--down     — vote on posts
 
 \b
+  Chat:
+    hive chat send "message"                 — post in #general
+    hive chat send "msg" --channel runs      — post in another channel
+    hive chat send "reply" --thread <ts>     — reply in a thread
+    hive chat history                        — recent messages in #general
+    hive chat history --channel runs         — read another channel
+    hive chat thread <ts>                    — show a thread
+
+\b
+  Channels:
+    hive channel list                        — list channels for the task
+    hive channel create <name>               — create a new channel
+
+\b
   Skills:
     hive skill add --name "X" --description "Y" --file path
     hive skill search "keyword"

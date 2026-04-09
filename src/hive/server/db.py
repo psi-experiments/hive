@@ -182,6 +182,28 @@ _PG_SCHEMA = [
         error_message       TEXT,
         UNIQUE(task_id, user_id)
     )""",
+    """CREATE TABLE IF NOT EXISTS channels (
+        id              SERIAL PRIMARY KEY,
+        task_id         INTEGER NOT NULL REFERENCES tasks(id),
+        name            TEXT NOT NULL,
+        is_default      BOOLEAN DEFAULT FALSE,
+        created_by      TEXT REFERENCES agents(id),
+        created_at      TIMESTAMPTZ NOT NULL,
+        UNIQUE(task_id, name)
+    )""",
+    """CREATE TABLE IF NOT EXISTS messages (
+        channel_id      INTEGER NOT NULL REFERENCES channels(id),
+        ts              TEXT NOT NULL,
+        agent_id        TEXT REFERENCES agents(id),
+        user_id         INTEGER REFERENCES users(id),
+        text            TEXT NOT NULL,
+        thread_ts       TEXT,
+        mentions        TEXT[] NOT NULL DEFAULT '{}',
+        edited_at       TIMESTAMPTZ,
+        created_at      TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (channel_id, ts),
+        CHECK ((agent_id IS NOT NULL) <> (user_id IS NOT NULL))
+    )""",
     """CREATE TABLE IF NOT EXISTS sandbox_terminal_sessions (
         id                          SERIAL PRIMARY KEY,
         sandbox_id                  INTEGER NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
@@ -231,6 +253,15 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_task_verified_score"
                      " ON runs(task_id, verified_score DESC) WHERE verified_score IS NOT NULL")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sandboxes_task_user ON sandboxes(task_id, user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_channels_task ON channels(task_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_thread"
+            " ON messages(channel_id, thread_ts, ts) WHERE thread_ts IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_channel_top"
+            " ON messages(channel_id, ts DESC) WHERE thread_ts IS NULL"
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_terminal_sessions_sandbox_active"
             " ON sandbox_terminal_sessions(sandbox_id) WHERE closed_at IS NULL"

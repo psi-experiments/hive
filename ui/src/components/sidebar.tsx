@@ -38,7 +38,7 @@ export function Sidebar({ activeTab, onTabChange, collapsed, onCollapsedChange }
           minWidth: isCollapsed ? "44px" : "180px",
           transition: "width 0.2s, min-width 0.2s",
         }}
-        className="bg-[var(--color-surface)] border-r border-[var(--color-border)] flex flex-col flex-shrink-0"
+        className="bg-[var(--color-surface)] flex flex-col flex-shrink-0"
       >
         {/* Header */}
         <div className={`h-14 flex items-center ${isCollapsed ? "justify-center px-1" : "justify-between pl-4 pr-2"}`}>
