@@ -2,14 +2,11 @@
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import Link from "next/link";
 import { useContext } from "@/hooks/use-context";
 import { useRuns } from "@/hooks/use-runs";
-import { useFeed } from "@/hooks/use-feed";
 import { useItems, useItemActivity, useMutateAllItems } from "@/hooks/use-items";
 import { ChartToggle, VerificationFilter } from "@/components/chart-toggle";
 import { Leaderboard, LeaderboardToggle, LeaderboardView } from "@/components/leaderboard";
-import { Feed } from "@/components/feed";
 import { KanbanBoard, KanbanToolbar, KanbanCardModal } from "@/components/kanban";
 import type { KanbanFilters } from "@/components/kanban";
 import { RunDetail } from "@/components/run-detail";
@@ -31,7 +28,7 @@ import { apiFetch } from "@/lib/api";
 import { BestRunsResponse } from "@/types/api";
 import { ShareImage } from "@/components/share-image";
 import { TaskTerminalPanel } from "@/components/task-terminal/task-terminal-panel";
-import { LuInfo, LuActivity, LuTerminal } from "react-icons/lu";
+import { ChatPanel } from "@/components/chat/chat-panel";
 import "github-markdown-css/github-markdown-light.css";
 
 function useReadme(repoUrl: string | undefined) {
@@ -60,16 +57,6 @@ function useReadme(repoUrl: string | undefined) {
   }, [repoUrl]);
 
   return { content, loading };
-}
-
-function TaskStats({ agents, runs }: { agents: number; runs: number }) {
-  const animAgents = useCountUp(agents);
-  const animRuns = useCountUp(runs);
-  return (
-    <span className="text-sm text-[var(--color-text-secondary)]">
-      <span className="font-semibold text-[var(--color-accent)]">{animAgents}</span> {agents === 1 ? "agent" : "agents"} produced <span className="font-semibold text-[var(--color-accent)]">{animRuns}</span> {runs === 1 ? "run" : "runs"}
-    </span>
-  );
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -222,16 +209,8 @@ export default function TaskDetailPage() {
   const taskPath = taskPathFrom(params.owner as string, params.slug as string);
   const { data: context, loading, error, refetch: refetchContext } = useContext(taskPath);
   const { runs, refetch: refetchRuns } = useRuns(taskPath);
-  const { items, hasMore: feedHasMore, loadMore: feedLoadMore, loadingMore: feedLoadingMore } = useFeed(taskPath);
   const { files: taskFiles, fetchFileContent } = useTaskFiles(context?.task.repo_url);
   const [selectedRun, setSelectedRun] = useState<Run | null>(null);
-  const [viewMode, setViewMode] = useState<"about" | "activity" | "sandbox">("about");
-  // Sandbox is private-only — fall back if a user lands on it for a public task
-  useEffect(() => {
-    if (viewMode === "sandbox" && context?.task?.task_type !== "private") {
-      setViewMode("about");
-    }
-  }, [viewMode, context?.task?.task_type]);
   const { content: readme, loading: readmeLoading } = useReadme(context?.task.repo_url);
 
   // Kanban
@@ -392,8 +371,9 @@ export default function TaskDetailPage() {
     if (isDragging === "about") {
       if (!aboutContainerRef.current) return;
       const rect = aboutContainerRef.current.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      setAboutWidth(Math.max(280, Math.min(600, x)));
+      // Sidebar is on the right (flex-row-reverse), so width is measured from the right edge
+      const w = rect.right - e.clientX;
+      setAboutWidth(Math.max(280, Math.min(600, w)));
       return;
     }
 
@@ -494,59 +474,59 @@ export default function TaskDetailPage() {
     if (run) setSelectedRun(run);
   };
 
-  const s = context.task.stats;
+  const sidebarHeader = (
+    <div className="h-[48px] shrink-0 px-3 flex items-center gap-2">
+      <button
+        onClick={() => router.back()}
+        aria-label="Back"
+        className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-white/70 hover:text-white hover:bg-white/10 transition-colors"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M8.5 3L4.5 7l4 4" />
+        </svg>
+      </button>
+      <h1 className="flex-1 text-[18px] font-bold text-white truncate">
+        {context.task.name}
+      </h1>
+      <div className="relative shrink-0">
+        <button
+          onClick={() => setAdminMenuOpen(!adminMenuOpen)}
+          aria-label="Task menu"
+          className="w-7 h-7 rounded-md flex items-center justify-center text-white/70 hover:text-white hover:bg-white/10 transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+            <circle cx="7" cy="3" r="1.2" />
+            <circle cx="7" cy="7" r="1.2" />
+            <circle cx="7" cy="11" r="1.2" />
+          </svg>
+        </button>
+        {adminMenuOpen && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => setAdminMenuOpen(false)} />
+            <div className="absolute right-0 top-9 z-20 bg-[var(--color-surface)] border border-[var(--color-border)] shadow-lg py-1 min-w-[160px]">
+              <button
+                onClick={() => { setAdminMenuOpen(false); setShowShare(true); }}
+                className="w-full text-left px-3 py-2 text-xs font-medium text-[var(--color-text)] hover:bg-[var(--color-layer-2)] transition-colors"
+              >
+                Share image
+              </button>
+              {(isAdmin || isOwner) && (
+                <button
+                  onClick={() => { setAdminMenuOpen(false); setShowDeleteTask(true); }}
+                  className="w-full text-left px-3 py-2 text-xs font-medium text-red-500 hover:bg-red-500/10 transition-colors"
+                >
+                  Delete task
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[var(--color-bg)] relative">
-      {/* Header bar */}
-      <header className="shrink-0 bg-[var(--color-surface)] border-b border-[var(--color-border)] px-3 md:px-5 py-3 flex items-center relative">
-        <button onClick={() => router.back()} aria-label="Back" className="w-8 h-8 rounded-lg bg-[var(--color-layer-1)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] hover:border-[var(--color-accent)] transition-all mr-4">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M8.5 3L4.5 7l4 4" />
-          </svg>
-        </button>
-        <div className="flex-1">
-          <h1 className="text-xl font-bold text-[var(--color-text)]">
-            {context.task.name}
-          </h1>
-        </div>
-        <TaskStats agents={s.agents_contributing} runs={s.total_runs} />
-        <div className="relative ml-2">
-          <button
-            onClick={() => setAdminMenuOpen(!adminMenuOpen)}
-            aria-label="Task menu"
-            className="w-8 h-8 rounded-lg bg-[var(--color-layer-1)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-[var(--color-text)] transition-colors"
-          >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
-              <circle cx="7" cy="3" r="1.2" />
-              <circle cx="7" cy="7" r="1.2" />
-              <circle cx="7" cy="11" r="1.2" />
-            </svg>
-          </button>
-          {adminMenuOpen && (
-            <>
-              <div className="fixed inset-0 z-10" onClick={() => setAdminMenuOpen(false)} />
-              <div className="absolute right-0 top-10 z-20 bg-[var(--color-surface)] border border-[var(--color-border)] shadow-lg py-1 min-w-[160px]">
-                <button
-                  onClick={() => { setAdminMenuOpen(false); setShowShare(true); }}
-                  className="w-full text-left px-3 py-2 text-xs font-medium text-[var(--color-text)] hover:bg-[var(--color-layer-2)] transition-colors"
-                >
-                  Share image
-                </button>
-                {(isAdmin || isOwner) && (
-                  <button
-                    onClick={() => { setAdminMenuOpen(false); setShowDeleteTask(true); }}
-                    className="w-full text-left px-3 py-2 text-xs font-medium text-red-500 hover:bg-red-500/10 transition-colors"
-                  >
-                    Delete task
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      </header>
-
       {/* Delete task confirmation */}
       {showDeleteTask && (
         <div className="fixed inset-0 z-[9999] flex items-start justify-center pt-24 backdrop-blur-md bg-black/30" onClick={() => setShowDeleteTask(false)}>
@@ -602,46 +582,15 @@ export default function TaskDetailPage() {
         </div>
       )}
 
-      {/* Content + left rail */}
-      <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
-
-      {/* Left rail tab nav */}
-      <nav className="hidden md:flex flex-col shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface)] py-2 px-2" style={{ width: 180 }}>
-        {(() => {
-          const isPrivate = context.task.task_type === "private";
-          type Tab = { id: "about" | "activity" | "sandbox"; label: string; Icon: typeof LuInfo };
-          const tabs: Tab[] = [
-            { id: "about", label: "About", Icon: LuInfo },
-            { id: "activity", label: "Activity", Icon: LuActivity },
-          ];
-          if (isPrivate) tabs.push({ id: "sandbox", label: "Sandbox", Icon: LuTerminal });
-          return tabs;
-        })().map((t) => {
-          const active = viewMode === t.id;
-          const Icon = t.Icon;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setViewMode(t.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2 text-sm font-medium transition-colors duration-150 ${
-                active
-                  ? "bg-[var(--color-accent-50)] text-[var(--color-accent)]"
-                  : "text-[var(--color-text-secondary)] hover:bg-[var(--color-layer-1)] hover:text-[var(--color-text)]"
-              }`}
-            >
-              <Icon size={18} className="flex-shrink-0" />
-              <span>{t.label}</span>
-            </button>
-          );
-        })}
-      </nav>
-
-      {/* About view */}
-      {viewMode === "about" && (
-        <main ref={aboutContainerRef} className="flex-1 min-h-0 flex flex-col md:flex-row bg-[var(--color-surface)] overflow-hidden">
-          {/* Left: sidebar content */}
-          <div style={{ width: aboutWidth, flexShrink: 0 }} className="hidden md:flex overflow-y-auto flex-col border-r border-[var(--color-border)]">
+      {/* All task content lives in the chat panel; system channels render about/runs/sandbox */}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+      <ChatPanel
+        taskPath={taskPath}
+        sidebarHeader={sidebarHeader}
+        aboutContent={
+        <main ref={aboutContainerRef} className="flex-1 min-h-0 flex flex-col md:flex-row-reverse bg-[var(--color-surface)] overflow-hidden">
+          {/* Right (visually): sidebar content */}
+          <div style={{ width: aboutWidth, flexShrink: 0 }} className="hidden md:flex overflow-y-auto flex-col border-l border-[var(--color-border)]">
             <div className="px-5 pt-4 pb-2 text-sm font-bold text-[var(--color-text)] uppercase tracking-wide">About</div>
             <div className="px-6 pt-1 pb-5">
               {context.task.description && (
@@ -760,10 +709,9 @@ export default function TaskDetailPage() {
             )}
           </div>
         </main>
-      )}
-
-      {/* Activity view — fills remaining space */}
-      <main ref={containerRef} className={`flex-1 min-h-0 flex flex-col md:flex-row bg-[var(--color-surface)] overflow-hidden md:overflow-hidden overflow-y-auto ${viewMode !== "activity" ? "hidden" : ""}`}>
+        }
+        runsContent={
+        <main ref={containerRef} className="flex-1 min-h-0 flex flex-col md:flex-row bg-[var(--color-surface)] overflow-hidden md:overflow-hidden overflow-y-auto">
         {/* Chart panel */}
         <div className="flex-1 min-w-0 flex flex-col min-h-[300px] md:min-h-0">
           <div className="flex-1 min-h-0">
@@ -805,7 +753,7 @@ export default function TaskDetailPage() {
               className="text-xs font-medium text-[var(--color-text-tertiary)] tracking-widest"
               style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
             >
-              SOCIAL FEED
+              LEADERBOARD
             </span>
           </div>
         ) : (
@@ -829,28 +777,10 @@ export default function TaskDetailPage() {
                 />
               </div>
             </div>
-
-            <div className="h-px bg-[var(--color-border)] shrink-0" />
-
-            {/* Activity section */}
-            <div className="flex-1 min-h-0 flex flex-col">
-              <div className="px-4 pt-3 pb-2 flex items-center justify-between">
-                <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Activity</span>
-                <Link href={`/h/${taskPath}`} className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors group">
-                  <span>View all</span>
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="group-hover:translate-x-0.5 transition-transform">
-                    <path d="M4.5 2.5L8 6l-3.5 3.5" />
-                  </svg>
-                </Link>
-              </div>
-              <div className="flex-1 min-h-0 overflow-hidden">
-                <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskPath={taskPath} hasMore={feedHasMore} onLoadMore={feedLoadMore} loadingMore={feedLoadingMore} />
-              </div>
-            </div>
           </div>
         )}
 
-        {/* Mobile: stacked leaderboard + activity */}
+        {/* Mobile: stacked leaderboard */}
         <div className="md:hidden w-full shrink-0">
           <div className="border-t border-[var(--color-border)]">
             <div className="px-4 pt-3 pb-2 flex items-center justify-between">
@@ -870,33 +800,15 @@ export default function TaskDetailPage() {
               />
             </div>
           </div>
-
-          <div className="h-px bg-[var(--color-border)]" />
-
-          <div>
-            <div className="px-4 pt-3 pb-2 flex items-center justify-between">
-              <span className="text-xs font-bold text-[var(--color-text)] uppercase tracking-wide">Activity</span>
-              <Link href={`/h/${taskPath}`} className="flex items-center gap-1 text-[10px] font-medium text-[var(--color-text-tertiary)] hover:text-[var(--color-accent)] transition-colors group">
-                <span>View all</span>
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="group-hover:translate-x-0.5 transition-transform">
-                  <path d="M4.5 2.5L8 6l-3.5 3.5" />
-                </svg>
-              </Link>
-            </div>
-            <div className="max-h-[500px] overflow-y-auto">
-              <Feed items={items} skills={context.skills} onRunClick={handleRunIdClick} compact taskPath={taskPath} />
-            </div>
-          </div>
         </div>
       </main>
-
-      {/* Sandbox view */}
-      {viewMode === "sandbox" && (
-        <main className="flex-1 min-h-0 flex flex-col bg-[var(--color-surface)] overflow-hidden">
-          <TaskTerminalPanel taskPath={taskPath} active={viewMode === "sandbox"} />
-        </main>
-      )}
-
+        }
+        sandboxContent={
+          context.task.task_type === "private" ? (
+            <TaskTerminalPanel taskPath={taskPath} active={true} />
+          ) : null
+        }
+      />
       </div>
 
       {selectedRun && (
