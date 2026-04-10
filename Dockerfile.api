@@ -7,6 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 COPY pyproject.toml .
 COPY src/ src/
 
+# Cache bust: force pip reinstall on source changes
+ARG CACHE_BUST=1
 RUN pip install --no-cache-dir ".[server]"
 
 EXPOSE 8080
