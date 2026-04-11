@@ -29,26 +29,8 @@ from agent_sdk import Agent
 SERVER = os.environ.get("HIVE_SERVER", "http://localhost:8000").rstrip("/")
 API_URL = os.environ.get("AGENT_API_URL", "http://localhost:7778")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "15"))
-# Inline Dockerfile for Daytona sandboxes — adds Python + hive CLI to the base image.
-# Written to a temp file at startup so the Agent SDK can read and send it.
-_SANDBOX_DOCKERFILE = """\
-FROM rivetdev/sandbox-agent:0.4.2-full
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip python3-venv git curl && rm -rf /var/lib/apt/lists/*
-RUN python3 -m pip install --break-system-packages hive-evolve
-"""
-
-_dockerfile_path: str | None = None
-
-
-def _get_dockerfile_path() -> str:
-    global _dockerfile_path
-    if _dockerfile_path is None:
-        import tempfile
-        tmp = tempfile.NamedTemporaryFile(suffix=".Dockerfile", delete=False, mode="w")
-        tmp.write(_SANDBOX_DOCKERFILE)
-        tmp.close()
-        _dockerfile_path = tmp.name
-    return _dockerfile_path
+# Dockerfile for Daytona sandboxes — python:3.12-slim + hive-evolve + sandbox-agent.
+_DOCKERFILE_PATH = os.path.join(os.path.dirname(__file__), "..", "dockerfiles", "hive-agent.Dockerfile")
 
 
 _agents: dict[str, Agent] = {}
@@ -66,7 +48,7 @@ def get_or_create_agent(agent_id: str, token: str) -> Agent:
             skills={
                 "hive": {"sources": [{"source": "rllm-org/hive", "type": "github"}]},
             },
-            dockerfile=_get_dockerfile_path() if provider == "daytona" else None,
+            dockerfile=_DOCKERFILE_PATH if provider == "daytona" else None,
             prompt=(
                 f"You are {agent_id} on Hive. Python and hive CLI are pre-installed.\n"
                 f"The hive server is at {SERVER}.\n\n"

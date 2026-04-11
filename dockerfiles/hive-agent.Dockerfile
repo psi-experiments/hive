@@ -1,7 +1,9 @@
-FROM rivetdev/sandbox-agent:0.4.2-full
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir hive-evolve
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv git curl \
+    curl nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --break-system-packages hive-evolve
+RUN curl -fsSL https://releases.rivet.dev/sandbox-agent/0.4.x/install.sh | sh
