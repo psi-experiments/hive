@@ -76,6 +76,72 @@ class TestInboxBasic:
         assert len(data["mentions"]) == 1
         assert data["mentions"][0]["thread_ts"] == parent["ts"]
 
+    def test_thread_followup_without_at_notifies_prior_mentions(self, client):
+        """Replies in the same thread inherit mention context so agents stay activated."""
+        _post_task()
+        token_a = _register(client, "agent-a")
+        token_b = _register(client, "agent-b")
+        parent = _post_msg(client, token_a, text="hey @agent-b check this")
+        follow = _post_msg(client, token_a, text="one more detail", thread_ts=parent["ts"])
+        assert follow["mentions"] == ["agent-b"]
+        resp = client.get("/api/tasks/hive/t1/inbox", params={"token": token_b})
+        data = resp.json()
+        assert data["unread_count"] == 2
+        assert len(data["mentions"]) == 2
+
+    def test_thread_followup_after_mid_thread_mention(self, client):
+        """Mentions introduced mid-thread apply to later replies without @."""
+        _post_task()
+        token_a = _register(client, "agent-a")
+        token_b = _register(client, "agent-b")
+        parent = _post_msg(client, token_a, text="thread start")
+        _post_msg(client, token_a, text="@agent-b need your take", thread_ts=parent["ts"])
+        _post_msg(client, token_a, text="especially on the edge case", thread_ts=parent["ts"])
+        resp = client.get("/api/tasks/hive/t1/inbox", params={"token": token_b})
+        assert resp.json()["unread_count"] == 2
+
+    def test_thread_reply_agent_not_self_notified_by_inheritance(self, client):
+        """An agent replying in a thread does not get an inbox hit from inherited self-mention."""
+        _post_task()
+        token_a = _register(client, "agent-a")
+        token_b = _register(client, "agent-b")
+        parent = _post_msg(client, token_a, text="@agent-b help")
+        _post_msg(client, token_b, text="on it", thread_ts=parent["ts"])
+        resp = client.get("/api/tasks/hive/t1/inbox", params={"token": token_b})
+        data = resp.json()
+        assert data["unread_count"] == 1
+        assert len(data["mentions"]) == 1
+
+    def test_thread_participant_without_mention_notified_on_followup(self, client):
+        """Agents that have posted in a thread get notified of follow-ups even without an @mention."""
+        _post_task()
+        token_a = _register(client, "agent-a")
+        token_b = _register(client, "agent-b")
+        parent = _post_msg(client, token_a, text="thread start, no mention")
+        _post_msg(client, token_b, text="jumping in", thread_ts=parent["ts"])
+        follow = _post_msg(client, token_a, text="one more thing", thread_ts=parent["ts"])
+        assert "agent-b" in follow["mentions"]
+        resp = client.get("/api/tasks/hive/t1/inbox", params={"token": token_b})
+        data = resp.json()
+        assert data["unread_count"] == 1
+        assert data["mentions"][0]["ts"] == follow["ts"]
+
+    def test_followup_in_thread_rooted_on_agent_toplevel_reply(self, client):
+        """If an agent replies top-level (no thread_ts), a user's thread on that reply still re-triggers the agent."""
+        _post_task()
+        token_a = _register(client, "agent-a")
+        token_b = _register(client, "agent-b")
+        _post_msg(client, token_a, text="@agent-b hello")
+        agent_reply = _post_msg(client, token_b, text="hi there")
+        assert agent_reply.get("thread_ts") is None
+        follow = _post_msg(client, token_a, text="can you elaborate", thread_ts=agent_reply["ts"])
+        assert follow["mentions"] == ["agent-b"]
+        resp = client.get("/api/tasks/hive/t1/inbox", params={"token": token_b})
+        data = resp.json()
+        assert data["unread_count"] == 2
+        ts_set = {m["ts"] for m in data["mentions"]}
+        assert follow["ts"] in ts_set
+
     def test_multiple_channels(self, client):
         """Mentions from different channels all appear in inbox."""
         _post_task()

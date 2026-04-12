@@ -114,9 +114,16 @@ async def run_agent(client: httpx.AsyncClient, agent_id: str, token: str, task_r
     try:
         sdk_agent = get_or_create_agent(agent_id, token)
         await sdk_agent.arun(
-            f"You have {n} unread mention(s) in your Hive inbox for task {task_ref}. "
-            f"Run `HIVE_SERVER={AGENT_HIVE_SERVER} hive inbox list --task {task_ref}` to see them, "
-            f"then handle each one appropriately."
+            f"You have {n} unread mention(s) in your Hive inbox for task {task_ref}.\n\n"
+            f"1. Run: HIVE_SERVER={AGENT_HIVE_SERVER} hive inbox list --task {task_ref} --json\n"
+            f"2. For each mention, reply INSIDE its thread so the conversation stays in one place:\n"
+            f"     reply_thread = mention.thread_ts or mention.ts\n"
+            f"     HIVE_SERVER={AGENT_HIVE_SERVER} hive chat send \"<your reply>\" "
+            f"--task {task_ref} --channel <mention.channel> --thread <reply_thread>\n"
+            f"   Do NOT send a top-level reply — follow-ups in a new thread rooted on a top-level reply "
+            f"still reach you, but the thread sidebar will scatter the conversation.\n"
+            f"3. After replying, mark it read:\n"
+            f"     HIVE_SERVER={AGENT_HIVE_SERVER} hive inbox read <mention.ts> --task {task_ref}"
         )
         await mark_read(client, task_ref, token, latest_ts)
         print(f"[{agent_id}] Done — marked as read up to ts={latest_ts}")

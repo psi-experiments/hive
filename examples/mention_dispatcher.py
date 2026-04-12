@@ -118,9 +118,13 @@ async def handle_agent(client: httpx.AsyncClient, agent_id: str, token: str, tas
         try:
             sdk_agent = get_or_create_agent(agent_id, token)
             await sdk_agent.arun(
-                f"You have {n} unread mention(s) in your Hive inbox for task {task_ref}. "
-                f"Run `HIVE_SERVER={SERVER} hive inbox list --task {task_ref}` to see them, "
-                f"then handle each one appropriately."
+                f"You have {n} unread mention(s) in your Hive inbox for task {task_ref}.\n\n"
+                f"1. Run: HIVE_SERVER={SERVER} hive inbox list --task {task_ref} --json\n"
+                f"2. For each mention, reply INSIDE its thread:\n"
+                f"     reply_thread = mention.thread_ts or mention.ts\n"
+                f"     HIVE_SERVER={SERVER} hive chat send \"<your reply>\" "
+                f"--task {task_ref} --channel <mention.channel> --thread <reply_thread>\n"
+                f"3. Mark it read: HIVE_SERVER={SERVER} hive inbox read <mention.ts> --task {task_ref}"
             )
             await mark_read(client, task_ref, token, latest_ts)
             print(f"[{agent_id}] Done — marked as read up to ts={latest_ts}")

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import JSONResponse as _BaseJSONResponse
 
 from .db import get_db, now
+from .mentions import mentions_for_message
 
 
 class JSONResponse(_BaseJSONResponse):
@@ -18,7 +19,6 @@ class JSONResponse(_BaseJSONResponse):
 
 
 _CHANNEL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,20}$")
-_MENTION_RE = re.compile(r"@([a-z0-9][a-z0-9-]{0,30})", re.IGNORECASE)
 
 # Default channel auto-created for every task. Reserved name (cannot be re-created).
 DEFAULT_CHANNEL = "general"
@@ -192,31 +192,6 @@ def _message_response(row: dict, reply_count: int = 0, thread_participants: list
     }
 
 
-async def _parse_mentions(text: str, conn) -> list[str]:
-    """Extract @<name> tokens from text, validate against agents table.
-
-    Returns a deduplicated list of valid agent IDs (preserving first-seen order).
-    Invalid names (typos, not registered) are silently dropped.
-    """
-    seen: list[str] = []
-    seen_set: set[str] = set()
-    for match in _MENTION_RE.finditer(text):
-        name = match.group(1).lower()
-        if name in seen_set:
-            continue
-        seen_set.add(name)
-        seen.append(name)
-    if not seen:
-        return []
-    placeholders = ",".join(["%s"] * len(seen))
-    rows = await (await conn.execute(
-        f"SELECT id FROM agents WHERE id IN ({placeholders})",
-        seen,
-    )).fetchall()
-    valid = {r["id"] for r in rows}
-    return [n for n in seen if n in valid]
-
-
 router = APIRouter(prefix="/api/tasks/{owner}/{slug}")
 
 
@@ -331,7 +306,10 @@ async def post_message(
                 raise HTTPException(404, f"parent message '{thread_ts}' not found")
             if parent["thread_ts"] is not None:
                 raise HTTPException(400, "cannot reply to a thread reply; reply to the top-level message")
-        mentions = await _parse_mentions(text, conn)
+        author_agent = author_id if kind == "agent" else None
+        mentions = await mentions_for_message(
+            text, conn, channel["id"], thread_ts, kind, author_agent
+        )
         agent_col = author_id if kind == "agent" else None
         user_col = author_id if kind == "user" else None
         msg_ts = _generate_ts()
@@ -391,7 +369,17 @@ async def edit_message(
         else:
             if existing["user_id"] != author_id:
                 raise HTTPException(403, "only the original author can edit this message")
-        mentions = await _parse_mentions(new_text, conn)
+        tt = existing.get("thread_ts")
+        author_agent = author_id if kind == "agent" else None
+        mentions = await mentions_for_message(
+            new_text,
+            conn,
+            channel["id"],
+            tt,
+            kind,
+            author_agent,
+            exclude_message_ts=ts if tt else None,
+        )
         await conn.execute(
             "UPDATE messages SET text = %s, mentions = %s, edited_at = %s"
             " WHERE channel_id = %s AND ts = %s",
