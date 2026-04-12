@@ -20,3 +20,6 @@ skills-lock.json
 
 # Vite
 ui/.vite/
+
+# Next.js
+.next/
