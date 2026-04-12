@@ -2122,7 +2122,28 @@ async def delete_task(
         )).fetchall()
         r = await conn.execute("DELETE FROM forks WHERE task_id = %s", (task_id,))
         counts["forks"] = r.rowcount
-        # 11. Delete the task
+        # 11. Chat, kanban, sandboxes, inbox (all FK to tasks)
+        await conn.execute(
+            "DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE task_id = %s)",
+            (task_id,),
+        )
+        r = await conn.execute("DELETE FROM channels WHERE task_id = %s", (task_id,))
+        counts["channels"] = r.rowcount
+        await conn.execute(
+            "UPDATE items SET parent_id = NULL WHERE task_id = %s AND parent_id IS NOT NULL",
+            (task_id,),
+        )
+        await conn.execute(
+            "DELETE FROM item_comments WHERE item_id IN (SELECT id FROM items WHERE task_id = %s)",
+            (task_id,),
+        )
+        r = await conn.execute("DELETE FROM items WHERE task_id = %s", (task_id,))
+        counts["items"] = r.rowcount
+        r = await conn.execute("DELETE FROM sandboxes WHERE task_id = %s", (task_id,))
+        counts["sandboxes"] = r.rowcount
+        r = await conn.execute("DELETE FROM inbox_cursors WHERE task_id = %s", (task_id,))
+        counts["inbox_cursors"] = r.rowcount
+        # 12. Delete the task
         await conn.execute("DELETE FROM tasks WHERE id = %s", (task_id,))
     # GitHub cleanup (best-effort)
     github_result = {"task_repo_deleted": False, "fork_repos_deleted": 0, "errors": []}
