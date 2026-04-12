@@ -53,7 +53,10 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
           <p className="p-4 text-sm text-[var(--color-text-secondary)]">Loading workspace…</p>
         )}
 
-        {!sandboxLoading && (!sandbox || sandbox.status === "creating") && !sandboxError && (
+        {!sandboxLoading &&
+          (!sandbox || sandbox.status === "creating") &&
+          !sandboxError &&
+          sandbox?.status !== "error" && (
           <div className="p-6 space-y-4">
             <div className="flex items-start gap-2 px-3 py-2 border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-xs text-amber-800 dark:text-amber-300">
               <span className="font-semibold">Beta:</span>
@@ -78,11 +81,34 @@ export function TaskTerminalPanel({ taskPath, active }: TaskTerminalPanelProps) 
           </div>
         )}
 
-        {sandbox?.status === "error" && (
-          <p className="p-4 text-sm text-red-500">{sandbox.error_message ?? "Workspace error"}</p>
+        {!sandboxLoading && creating && sandbox?.status === "error" && (
+          <div className="p-6 flex items-center gap-3 text-sm text-[var(--color-text-secondary)]">
+            <span
+              className="inline-block w-4 h-4 border-2 border-[var(--color-text-tertiary)] border-t-transparent rounded-full animate-spin"
+              aria-label="Retrying"
+            />
+            Retrying workspace…
+          </div>
         )}
 
-        {sandboxError && <p className="p-4 text-sm text-red-500">{sandboxError}</p>}
+        {!sandboxLoading && !ready && !creating && (sandbox?.status === "error" || sandboxError) && (
+          <div className="p-6 space-y-4">
+            <p className="text-sm text-red-500 whitespace-pre-wrap">
+              {sandbox?.status === "error" && sandbox.error_message
+                ? sandbox.error_message
+                : sandboxError}
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void ctx.createSandbox(taskPath)}
+                className="px-6 py-3 text-sm font-medium bg-[var(--color-accent)] text-white rounded-md hover:bg-[var(--color-accent-hover)] transition-colors"
+              >
+                Try again
+              </button>
+            </div>
+          </div>
+        )}
 
         {ready && (
           <div className="flex-1 min-h-0 flex flex-col p-2 overflow-hidden">

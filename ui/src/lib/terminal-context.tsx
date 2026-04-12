@@ -137,12 +137,15 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
         throw new Error(typeof d?.detail === "string" ? d.detail : `HTTP ${res.status}`);
       }
       const data = (await res.json()) as SandboxInfo;
-      update(taskPath, { sandbox: data });
+      update(taskPath, { sandbox: data, sandboxError: null });
       if (data.status === "creating") {
         const t = setInterval(async () => {
           try {
             const s = await apiFetch<SandboxInfo>(`/tasks/${taskPath}/sandbox`);
-            update(taskPath, { sandbox: s });
+            update(taskPath, {
+              sandbox: s,
+              ...(s.status === "ready" ? { sandboxError: null } : {}),
+            });
             if (s.status === "ready" || s.status === "error") {
               clearInterval(t);
               update(taskPath, { creatingSandbox: false });
@@ -155,7 +158,14 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
         return;
       }
     } catch (e) {
-      update(taskPath, { sandboxError: e instanceof Error ? e.message : "Failed to create sandbox" });
+      const msg = e instanceof Error ? e.message : "Failed to create sandbox";
+      update(taskPath, { sandboxError: msg });
+      try {
+        const s = await apiFetch<SandboxInfo>(`/tasks/${taskPath}/sandbox`);
+        update(taskPath, { sandbox: s });
+      } catch {
+        /* no row or load failed — leave sandbox null */
+      }
     } finally {
       update(taskPath, { creatingSandbox: false });
     }
