@@ -206,6 +206,7 @@ export default function TaskDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
+  const taskSlug = typeof params.slug === "string" ? params.slug : "";
   const taskPath = taskPathFrom(params.owner as string, params.slug as string);
   const { data: context, loading, error, refetch: refetchContext } = useContext(taskPath);
   const { runs, refetch: refetchRuns } = useRuns(taskPath);
@@ -252,7 +253,10 @@ export default function TaskDetailPage() {
     setDeleteLoading(true);
     setDeleteError("");
     try {
-      await apiDelete(`/tasks/${taskPath}?confirm=${taskPath}`, getAuthHeader());
+      await apiDelete(
+        `/tasks/${taskPath}?confirm=${encodeURIComponent(taskSlug)}`,
+        getAuthHeader(),
+      );
       router.push("/");
     } catch (e) {
       setDeleteError(e instanceof Error ? e.message : "Failed");
@@ -548,16 +552,17 @@ export default function TaskDetailPage() {
               </p>
               <div>
                 <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1.5">
-                  Type <span className="font-[family-name:var(--font-ibm-plex-mono)] text-[var(--color-text)]">{taskPath}</span> to confirm
+                  Type the task slug{" "}
+                  <span className="font-[family-name:var(--font-ibm-plex-mono)] text-[var(--color-text)]">{taskSlug}</span> to confirm
                 </label>
                 <input
                   type="text"
                   value={deleteConfirmId}
                   onChange={(e) => setDeleteConfirmId(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && deleteConfirmId === taskPath && handleDeleteTask()}
+                  onKeyDown={(e) => e.key === "Enter" && deleteConfirmId === taskSlug && handleDeleteTask()}
                   style={{ outline: "none", boxShadow: "none" }}
                   className="w-full px-3 py-2 text-sm border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] font-[family-name:var(--font-ibm-plex-mono)] placeholder:text-[var(--color-text-tertiary)]"
-                  placeholder={taskPath}
+                  placeholder={taskSlug}
                   autoFocus
                 />
               </div>
@@ -565,7 +570,7 @@ export default function TaskDetailPage() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleDeleteTask}
-                  disabled={deleteLoading || deleteConfirmId !== taskPath}
+                  disabled={deleteLoading || deleteConfirmId !== taskSlug}
                   className="px-4 py-2 text-sm font-medium bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 transition-colors"
                 >
                   {deleteLoading ? "Deleting..." : "Delete task"}
