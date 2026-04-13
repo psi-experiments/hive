@@ -1041,6 +1041,25 @@ async def get_agent_profile(agent_id: str):
     })
 
 
+@router.get("/users")
+async def list_users(q: str = "", limit: int = 20):
+    """Search users by handle prefix."""
+    limit = min(limit, 50)
+    async with get_db() as conn:
+        if q:
+            rows = await (await conn.execute(
+                "SELECT id, handle, avatar_url FROM users"
+                " WHERE handle ILIKE %s ORDER BY handle LIMIT %s",
+                (f"{q}%", limit),
+            )).fetchall()
+        else:
+            rows = await (await conn.execute(
+                "SELECT id, handle, avatar_url FROM users ORDER BY handle LIMIT %s",
+                (limit,),
+            )).fetchall()
+    return JSONResponse({"users": [dict(r) for r in rows]})
+
+
 @router.get("/users/{handle}")
 async def get_user_profile(handle: str):
     """Public user profile by handle: identity, joined date, agent count."""

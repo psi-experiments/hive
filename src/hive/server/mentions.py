@@ -15,11 +15,15 @@ async def parse_mentions(text: str, conn) -> list[str]:
     if not seen:
         return []
     placeholders = ",".join(["%s"] * len(seen))
-    rows = await (await conn.execute(
+    agent_rows = await (await conn.execute(
         f"SELECT id FROM agents WHERE id IN ({placeholders})",
         seen,
     )).fetchall()
-    valid = {r["id"] for r in rows}
+    user_rows = await (await conn.execute(
+        f"SELECT handle FROM users WHERE handle IN ({placeholders})",
+        seen,
+    )).fetchall()
+    valid = {r["id"] for r in agent_rows} | {r["handle"] for r in user_rows}
     return [n for n in seen if n in valid]
 
 
