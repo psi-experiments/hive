@@ -123,7 +123,7 @@ class GitHubApp:
             resp = httpx.post(
                 f"{_GITHUB_API}/orgs/{self.org}/repos",
                 headers=self.headers(),
-                json={"name": repo_name},
+                json={"name": repo_name, "visibility": "private"},
                 timeout=30,
             )
             resp.raise_for_status()
@@ -154,7 +154,7 @@ class GitHubApp:
             resp = httpx.post(
                 f"{_GITHUB_API}/orgs/{self.org}/repos",
                 headers=self.headers(),
-                json={"name": repo_name, "description": description, "visibility": "public"},
+                json={"name": repo_name, "description": description, "visibility": "private"},
                 timeout=30,
             )
             resp.raise_for_status()
